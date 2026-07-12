@@ -7,7 +7,7 @@
 <meta name="theme-color" content="#05080f">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>Satellitenhimmel v0.4</title>
+<title>Satellitenhimmel v0.5</title>
 <style>
 :root{
   --bg0:#05080f; --bg1:#0b1220; --bg2:#101a2e; --line:#1d2a42;
@@ -98,7 +98,12 @@ section.act{display:flex}
   background:linear-gradient(135deg,#17233d,#0d1526);border:1px solid #2c3f63}
 #passHero .l1{font-size:11.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--mut)}
 #passHero .l2{margin-top:3px;font-size:16.5px;font-weight:700;color:var(--iss);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#passMeta{flex:none;margin:9px 14px 5px;font-size:12px;color:var(--dim)}
+#passHead{flex:none;display:flex;align-items:center;gap:8px;margin:9px 14px 5px}
+#passMeta{font-size:12px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#passHead .chip{margin-left:auto;flex:none}
+.pass.iss{border-color:#5a4520}
+.pass .mag{flex:none;margin-left:auto;font-size:12.5px;color:var(--ink);font-weight:600}
+.pass .nm{font-weight:700;flex:none;max-width:44%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #passList{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:0 14px 20px}
 .pass{height:62px;padding:8px 12px;margin-bottom:8px;background:var(--bg1);border:1px solid var(--line);border-radius:12px;overflow:hidden}
 .pass .r1{display:flex;align-items:baseline;gap:8px;font-size:13.5px}
@@ -146,7 +151,7 @@ section.act{display:flex}
 
 <div id="tabs">
   <button data-v="sky" class="act" type="button">Himmel</button>
-  <button data-v="pass" type="button">ISS-P&auml;sse</button>
+  <button data-v="pass" type="button">P&auml;sse</button>
   <button data-v="list" type="button">Liste</button>
 </div>
 
@@ -173,10 +178,13 @@ section.act{display:flex}
 
   <section id="view-pass">
     <div id="passHero">
-      <div class="l1">N&auml;chster sichtbarer &Uuml;berflug</div>
+      <div class="l1">N&auml;chster sichtbarer &Uuml;berflug (alle Objekte)</div>
       <div class="l2" id="passHeroTxt">wird berechnet …</div>
     </div>
-    <div id="passMeta">ISS, n&auml;chste 72 h, Schwelle 10&deg; Elevation &middot; Zeiten in Ger&auml;tezeit</div>
+    <div id="passHead">
+      <span id="passMeta">wird berechnet &hellip;</span>
+      <button class="chip act" id="chipBright" type="button">Nur hell (&#8804;4 mag)</button>
+    </div>
     <div id="passList"></div>
   </section>
 
@@ -432,8 +440,9 @@ const SH = (function(){
   }
 
   /* Ueberflugsuche: grob 30 s, dann Verfeinerung; Klassifikation + Schatteneintritt */
-  function findPasses(sat, obsGd, startDate, hours, minEl, latDeg, lonDeg){
-    const passes = [], stepMs = 30000, t0 = startDate.getTime(), t1 = t0 + hours*3600000;
+  function findPasses(sat, obsGd, startDate, hours, minEl, endMs, stepOverride){
+    const passes = [], stepMs = stepOverride || 30000, t0 = startDate.getTime();
+    const t1 = endMs || (t0 + hours*3600000);
     let prevEl = elAt(sat, t0, obsGd), tPrev = t0;
     for (let t = t0 + stepMs; t <= t1; t += stepMs){
       const el = elAt(sat, t, obsGd);
@@ -481,7 +490,44 @@ const SH = (function(){
     return passes;
   }
 
-  return { jdFromDate, compass, sunRaDec, sunAltAz, isSunlit, makeSats, observe, findPasses, D2R, R2D };
+  /* Beobachterposition im ECI (fuer Phasenwinkel) */
+  function obsEci(date, obsGd){
+    const ecf = satellite.geodeticToEcf(obsGd);
+    return satellite.ecfToEci(ecf, satellite.gstime(date));
+  }
+  /* Scheinbare Helligkeit nach McCants:
+       m = stdMag - 15,75 + 2,5 * log10( d^2 / f ),  f = (1 + cos p) / 2
+     stdMag ist normiert auf 1000 km Entfernung und 90 Grad Phasenwinkel (f = 0,5);
+     Einsetzen von d = 1000, f = 0,5 liefert exakt m = stdMag. Naeherung fuer diffuse
+     Kugel - taumelnde Objekte koennen um mehrere Magnituden schwanken (Flares). */
+  function apparentMag(stdMag, date, sat, obsGd, rangeKm){
+    if (stdMag === null || stdMag === undefined) return null;
+    let pv; try{ pv = satellite.propagate(sat.rec, date); }catch(e){ return null; }
+    if (!pv || !pv.position) return null;
+    const s = sunRaDec(jdFromDate(date));
+    const sun = { x: AU_KM*Math.cos(s.dec)*Math.cos(s.ra), y: AU_KM*Math.cos(s.dec)*Math.sin(s.ra), z: AU_KM*Math.sin(s.dec) };
+    const o = obsEci(date, obsGd), p = pv.position;
+    const a = [sun.x-p.x, sun.y-p.y, sun.z-p.z];
+    const b = [o.x-p.x, o.y-p.y, o.z-p.z];
+    const na = Math.hypot(a[0],a[1],a[2]), nb = Math.hypot(b[0],b[1],b[2]);
+    const cosP = (a[0]*b[0]+a[1]*b[1]+a[2]*b[2])/(na*nb);
+    const f = Math.max((1+cosP)/2, 0.005);
+    return stdMag - 15.75 + 2.5*Math.log10(rangeKm*rangeKm / f);
+  }
+  /* Nachtfenster: Sonne tiefer als -6 Grad (buergerliche Daemmerung) */
+  function nightWindows(startDate, hours, obsGd){
+    const t0 = startDate.getTime(), t1 = t0 + hours*3600000, step = 600000;   /* 10 min */
+    const win = []; let open = null;
+    for (let t = t0; t <= t1; t += step){
+      const dark = sunAltAz(new Date(t), obsGd).alt < -6;
+      if (dark && open === null) open = t;
+      if (!dark && open !== null){ win.push([open, t]); open = null; }
+    }
+    if (open !== null) win.push([open, t1]);
+    return win;
+  }
+  return { jdFromDate, compass, sunRaDec, sunAltAz, isSunlit, makeSats, observe, findPasses,
+           apparentMag, nightWindows, obsEci, D2R, R2D };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = SH;
 </script>
@@ -495,11 +541,11 @@ if (typeof module !== 'undefined' && module.exports) module.exports = SH;
 if (typeof document === 'undefined') return;
 
 /* ---------- Konfiguration ---------- */
-const APP_VERSION   = '0.4';
+const APP_VERSION   = '0.5';
 const OBS_DEFAULT   = { name: 'Wettenberg', lat: 50.61, lon: 8.65, altKm: 0.20 };
 const OBS_KEY       = 'satHimmel.obs.v1';
 const MIN_PASS_EL   = 10;      /* Grad */
-const PASS_HOURS    = 72;
+const PASS_HOURS    = 48;
 const STALE_DAYS    = 14;      /* TLE aelter -> ausblenden */
 const CACHE_MAX_H   = 6;       /* localStorage-Cache */
 const FETCH_TIMEOUT = 8000;    /* ms, via Promise.race (kein AbortSignal!) */
@@ -553,7 +599,8 @@ const dayLabel = ms => {
 };
 
 /* ---------- Zustand ---------- */
-let sats = [], selected = 25544, passes = null;
+let sats = [], selected = 25544, passes = null, brightOnly = true;   /* Standard: nur mit blossem Auge machbar */
+let passScan = { i: 0, n: 0, done: false, token: 0 };
 let snap = [];               /* letzte Beobachtungen aller Sats */
 let trail = [], fwdPath = [], lastFwd = 0;
 let arcs = [], lastArcs = 0;   /* Vorausbahnen aller Objekte ueber dem Horizont */
@@ -813,7 +860,7 @@ function drawDome(now, sunA){
   /* ISS unter Horizont: Aufgangsmarke am Rand */
   const issSnap = snap.find(e => e.s.catnr === 25544);
   if ((!issSnap || issSnap.o.el <= 0) && passes && passes.length){
-    const nx = passes.find(p => p.rise > tNow);
+    const nx = passes.find(p => p.catnr === 25544 && p.rise > tNow);
     if (nx){
       const a = nx.azRise * SH.D2R;
       ctx.strokeStyle = '#ffc857'; ctx.lineWidth = 2.5*DPR;
@@ -854,34 +901,42 @@ function updateIssChip(nowMs){
   if (e && e.o.el > 0){
     txt = 'jetzt ' + e.o.el.toFixed(0) + '\u00b0 \u00fcber ' + SH.compass(e.o.az) + ' \u00b7 ' + Math.round(e.o.range) + ' km \u00b7 ' + stateWord(e.o.cls);
   } else if (passes && passes.length){
-    const nx = passes.find(p => p.rise > nowMs);
+    const nx = passes.find(p => p.catnr === 25544 && p.rise > nowMs);
     if (nx){
       const min = Math.max(0, Math.round((nx.rise - nowMs)/60000));
       txt = 'Aufgang ' + fmtHM.format(new Date(nx.rise)) + ' (in ' + (min >= 90 ? Math.floor(min/60)+' h '+(min%60)+' min' : min+' min') + ') im ' + SH.compass(nx.azRise) + (nx.cls === 'sichtbar' ? ' \u00b7 sichtbar \u2605' : '');
-    } else txt = 'kein \u00dcberflug in den n\u00e4chsten ' + PASS_HOURS + ' h';
+    } else txt = 'kein sichtbarer \u00dcberflug in den n\u00e4chsten ' + PASS_HOURS + ' h';
   } else txt = 'P\u00e4sse werden berechnet \u2026';
   $('issTxt').textContent = txt;
 }
 function renderPasses(){
   const nowMs = Date.now();
   const host = $('passList'); host.innerHTML = '';
-  if (!passes){ return; }
-  const vis = passes.find(p => p.cls === 'sichtbar' && p.set > nowMs);
+  if (!passes){ $('passHeroTxt').textContent = 'wird berechnet \u2026'; return; }
+  const shown = passes.filter(p => p.set > nowMs && (!brightOnly || (p.mag !== null && p.mag <= 4.0)));
+  const vis = shown[0];
   $('passHeroTxt').textContent = vis
-    ? dayLabel(vis.rise) + ' ' + fmtHM.format(new Date(vis.rise)) + ' \u00b7 max ' + Math.round(vis.maxEl) + '\u00b0 ' + SH.compass(vis.azCulm)
+    ? vis.name + ' \u00b7 ' + dayLabel(vis.rise) + ' ' + fmtHM.format(new Date(vis.rise)) + ' \u00b7 max ' + Math.round(vis.maxEl) + '\u00b0 ' + SH.compass(vis.azCulm) +
+      (vis.mag !== null ? ' \u00b7 ' + (vis.mag <= 0 ? '' : '+') + vis.mag.toFixed(1).replace('.',',') + ' mag' : '')
     : 'keiner in den n\u00e4chsten ' + PASS_HOURS + ' h';
-  for (const p of passes){
-    if (p.set < nowMs) continue;
+  $('passMeta').textContent = passScan.done
+    ? shown.length + (brightOnly ? ' helle' : '') + ' \u00dcberfl\u00fcge \u00b7 ' + PASS_HOURS + ' h \u00b7 ab ' + MIN_PASS_EL + '\u00b0'
+    : 'rechne \u2026 ' + passScan.i + '/' + passScan.n + ' Objekte';
+  for (const p of shown){
     const div = document.createElement('div'); div.className = 'pass';
     let extra = '';
-    if (p.cls === 'sichtbar' && p.shadowAt){
-      extra = ' \u00b7 Schatten ab ' + fmtT.format(new Date(p.shadowAt)) + ' (' + Math.round(p.shadowEl) + '\u00b0)';
+    if (p.shadowAt){
+      extra = ' \u00b7 Schatten ab ' + fmtHM.format(new Date(p.shadowAt)) + ' (' + Math.round(p.shadowEl) + '\u00b0)';
     }
+    div.className = 'pass' + (p.catnr === 25544 ? ' iss' : '');
+    div.dataset.cat = p.catnr;
+    const magTxt = p.mag === null ? '' : (p.mag <= 0 ? '' : '+') + p.mag.toFixed(1).replace('.',',') + ' mag';
     div.innerHTML =
-      '<div class="r1"><span class="day">' + dayLabel(p.rise) + '</span>' +
-      '<span class="tt num"><b>' + fmtT.format(new Date(p.rise)) + '</b> \u2192 ' + fmtT.format(new Date(p.culm)) + ' \u2192 <b>' + fmtT.format(new Date(p.set)) + '</b></span></div>' +
-      '<div class="r2"><span class="badge ' + p.cls + '">' + stateWord(p.cls).toUpperCase() + '</span>' +
-      '<span class="num">max ' + Math.round(p.maxEl) + '\u00b0 \u00fcber ' + SH.compass(p.azCulm) + extra + '</span></div>';
+      '<div class="r1"><span class="nm">' + p.name + (p.mates ? ' <small style="color:var(--dim);font-weight:400">+' + p.mates + '</small>' : '') + '</span>' +
+      '<span class="tt num"><b>' + fmtHM.format(new Date(p.rise)) + '</b>\u2192' + fmtHM.format(new Date(p.set)) + '</span>' +
+      '<span class="mag num">' + magTxt + '</span></div>' +
+      '<div class="r2"><span class="badge ' + p.cls + '">' + dayLabel(p.rise) + ' ' + fmtT.format(new Date(p.culm)) + '</span>' +
+      '<span class="num">max ' + Math.round(p.maxEl) + '\u00b0 ' + SH.compass(p.azCulm) + extra + '</span></div>';
     host.appendChild(div);
   }
 }
@@ -937,6 +992,28 @@ function loop(){
   }
 }
 
+/* Objekte auf praktisch identischer Bahn (angedockte Module, Frachter) erzeugen
+   denselben Ueberflug mehrfach. Zusammenfassen: gleiche Kulminationszeit (< 90 s),
+   gleiche Hoehe (< 3 Grad), gleiche Richtung (< 8 Grad) -> hellstes Objekt gewinnt. */
+function dedupePasses(){
+  const out = [];
+  for (const p of passes){
+    const twin = out.find(q =>
+      Math.abs(q.culm - p.culm) < 90000 &&
+      Math.abs(q.maxEl - p.maxEl) < 3 &&
+      Math.abs(((q.azCulm - p.azCulm + 540) % 360) - 180) < 8);
+    if (!twin){ p.mates = 0; out.push(p); continue; }
+    twin.mates = (twin.mates || 0) + 1;
+    const mp = p.mag === null ? 99 : p.mag, mt = twin.mag === null ? 99 : twin.mag;
+    if (mp < mt){                                  /* helleres Objekt uebernimmt die Zeile */
+      twin.catnr = p.catnr; twin.name = p.name; twin.mag = p.mag;
+      twin.maxEl = p.maxEl; twin.azCulm = p.azCulm; twin.rise = p.rise; twin.set = p.set;
+      twin.culm = p.culm; twin.shadowAt = p.shadowAt; twin.shadowEl = p.shadowEl;
+    }
+  }
+  passes = out;
+}
+
 /* ---------- Interaktion ---------- */
 function switchView(v){
   curView = v;
@@ -969,6 +1046,21 @@ dome.addEventListener('pointerup', e => {
     toast('Gew\u00e4hlt: ' + (s ? s.name : best));
   }
 });
+$('chipBright').addEventListener('click', () => {
+  brightOnly = !brightOnly;
+  $('chipBright').textContent = brightOnly ? 'Nur hell (\u22644 mag)' : 'Alle';
+  renderPasses();
+});
+$('passList').addEventListener('click', e => {
+  const row = e.target.closest ? e.target.closest('.pass') : null;
+  if (!row || !row.dataset.cat) return;
+  const cat = parseInt(row.dataset.cat, 10);
+  const s = sats.find(x => x.catnr === cat);
+  if (!s) return;
+  selected = cat; trail = []; fwdPath = []; lastFwd = 0;
+  switchView('sky');
+  toast('Gew\u00e4hlt: ' + s.name);
+});
 document.querySelectorAll('#listHead .chip').forEach(c => c.addEventListener('click', () => {
   filterVis = !filterVis;
   c.textContent = filterVis ? 'Nur sichtbare' : 'Alle';
@@ -989,14 +1081,39 @@ document.addEventListener('visibilitychange', () => {
 });
 addEventListener('resize', () => { sizeDome(); });
 
-/* ---------- Paesse asynchron rechnen ---------- */
+/* ---------- Paesse aller Objekte, in Haeppchen (blockiert die UI nicht) ----------
+   Nur Nachtfenster (Sonne < -6 Grad) werden durchsucht: spart bei 24-72 h rund 60-70 %
+   der SGP4-Aufrufe, und nur dort kann ein Objekt ueberhaupt sichtbar sein. */
 function computePassesAsync(){
-  setTimeout(() => {
-    const iss = sats.find(s => s.catnr === 25544);
-    if (!iss){ passes = []; renderPasses(); return; }
-    passes = SH.findPasses(iss, obsGd, new Date(), PASS_HOURS, MIN_PASS_EL, OBSERVER.lat, OBSERVER.lon);
-    renderPasses(); updateIssChip(Date.now());
-  }, 60);
+  const token = ++passScan.token;
+  const t0 = new Date();
+  const windows = SH.nightWindows(t0, PASS_HOURS, obsGd);
+  const list = sats.slice();
+  passes = [];
+  passScan = { i: 0, n: list.length, done: false, token };
+  const step = () => {
+    if (passScan.token !== token) return;                 /* Ortswechsel/Refresh dazwischen */
+    const t = Date.now();
+    while (passScan.i < list.length && Date.now() - t < 25){   /* max 25 ms pro Haeppchen */
+      const sat = list[passScan.i++];
+      for (const [wa, wb] of windows){
+        const found = SH.findPasses(sat, obsGd, new Date(wa), 0, MIN_PASS_EL, wb, 60000);
+        for (const p of found){
+          if (p.cls !== 'sichtbar') continue;
+          const m = SH.apparentMag(sat.mag, new Date(p.culm), sat, obsGd,
+                                   (SH.observe(sat, new Date(p.culm), obsGd, -90) || {}).range || 1000);
+          p.catnr = sat.catnr; p.name = sat.name; p.mag = m;
+          passes.push(p);
+        }
+      }
+    }
+    passes.sort((a,b) => a.rise - b.rise);
+    dedupePasses();
+    if (curView === 'pass') renderPasses();
+    if (passScan.i < list.length){ setTimeout(step, 0); }
+    else { passScan.done = true; if (curView === 'pass') renderPasses(); updateIssChip(Date.now()); }
+  };
+  setTimeout(step, 40);
 }
 
 /* ---------- Ort-Sheet ---------- */
