@@ -7,7 +7,7 @@
 <meta name="theme-color" content="#05080f">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>Satellitenhimmel v0.8</title>
+<title>Satellitenhimmel v0.81</title>
 <style>
 :root{
   --bg0:#05080f; --bg1:#0b1220; --bg2:#101a2e; --line:#1d2a42;
@@ -225,7 +225,7 @@ section.act{display:flex}
     <div id="peilBar">
       <span id="peilPoint" class="num">&ndash;</span>
       <button class="chip" id="btnKal" type="button">Kalibrieren</button>
-      <span id="peilKalTxt">Kompass (&plusmn;5&ndash;10&deg;)</span>
+      <span id="peilKalTxt">Auto-Kompass aktiv &plusmn;5&ndash;10&deg;</span>
     </div>
   </section>
   <section id="view-list">
@@ -267,7 +267,7 @@ section.act{display:flex}
 
 <div id="kalSheet" role="dialog" aria-label="Kalibrieren">
   <h2>Azimut kalibrieren</h2>
-  <div class="sub">Fadenkreuz <b>vorher</b> auf das Ziel halten, dann Ziel antippen. Oder: im Sichtfenster horizontal ziehen, bis Himmel und Anzeige &uuml;bereinstimmen.</div>
+  <div class="sub">Optional &ndash; der Auto-Kompass l&auml;uft auch ohne (&plusmn;5&ndash;10&deg;, reicht f&uuml;r die ISS). F&uuml;r ~1&deg;: Fadenkreuz <b>vorher</b> auf das Ziel halten, dann Ziel antippen. Oder im Sichtfenster horizontal ziehen, bis Himmel und Anzeige zusammenpassen.</div>
   <div id="kalTargets"></div>
   <div class="btnrow" style="margin-top:10px">
     <button class="btn gho" id="btnKalCancel" type="button">Schlie&szlig;en</button>
@@ -692,7 +692,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = SH;
 if (typeof document === 'undefined') return;
 
 /* ---------- Konfiguration ---------- */
-const APP_VERSION   = '0.8';
+const APP_VERSION   = '0.81';
 const OBS_DEFAULT   = { name: 'Wettenberg', lat: 50.61, lon: 8.65, altKm: 0.20 };
 const OBS_KEY       = 'satHimmel.obs.v1';
 const MIN_PASS_EL   = 10;      /* Grad */
@@ -1474,7 +1474,7 @@ $('btnKal').addEventListener('click', () => {
 $('btnKalCancel').addEventListener('click', () => $('kalSheet').classList.remove('show'));
 $('btnKalReset').addEventListener('click', () => {
   peil.offsetSrc = 'auto'; peil.offset = null;
-  $('peilKalTxt').textContent = 'Kompass (\u00b15\u201310\u00b0)';
+  $('peilKalTxt').textContent = 'Auto-Kompass aktiv \u00b15\u201310\u00b0';
   $('kalSheet').classList.remove('show');
   toast('Zur\u00fcck auf Kompass-Offset');
 });
@@ -1587,6 +1587,16 @@ function drawPeil(now){
       pctx.fillStyle = isIss ? '#ffc857' : '#cbd5e5';
       pctx.fillText(isIss ? 'ISS' : shortName(s.name), x, y - (rad + 9*DPR));
     }
+  }
+  /* Handy zeigt auf den Boden: klarer Hinweis statt leerem Fenster */
+  if (pel < -25){
+    pctx.fillStyle = 'rgba(142,162,192,.95)';
+    pctx.font = 600 + ' ' + 14*DPR + 'px -apple-system,sans-serif';
+    pctx.textAlign = 'center';
+    pctx.fillText('\u2191 Handy anheben \u2013 R\u00fcckseite zum Himmel', cx, cy - 22*DPR);
+    pctx.fillStyle = 'rgba(93,111,143,.9)';
+    pctx.font = 500 + ' ' + 11.5*DPR + 'px -apple-system,sans-serif';
+    pctx.fillText('wie beim Fotografieren \u00b7 der Pfeil f\u00fchrt zum Ziel', cx, cy - 2*DPR);
   }
   /* Fadenkreuz */
   pctx.strokeStyle = 'rgba(232,238,249,.85)'; pctx.lineWidth = 1.4*DPR;
