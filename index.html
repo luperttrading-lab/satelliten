@@ -7,7 +7,7 @@
 <meta name="theme-color" content="#05080f">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>Satellitenhimmel v0.82</title>
+<title>Satellitenhimmel v0.83</title>
 <style>
 :root{
   --bg0:#05080f; --bg1:#0b1220; --bg2:#101a2e; --line:#1d2a42;
@@ -692,7 +692,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = SH;
 if (typeof document === 'undefined') return;
 
 /* ---------- Konfiguration ---------- */
-const APP_VERSION   = '0.82';
+const APP_VERSION   = '0.83';
 const OBS_DEFAULT   = { name: 'Wettenberg', lat: 50.61, lon: 8.65, altKm: 0.20 };
 const OBS_KEY       = 'satHimmel.obs.v1';
 const MIN_PASS_EL   = 10;      /* Grad */
@@ -1576,6 +1576,7 @@ function drawPeil(now){
     }
   }
   /* Satelliten aus snap */
+  const peilLabels = [];
   for (const {s,o} of snap){
     const isIss = s.catnr === 25544, isSel = s.catnr === selected;
     if (o.el < -5 && !isIss && !isSel) continue;   /* ISS + Auswahl auch unter dem Horizont */
@@ -1598,10 +1599,20 @@ function drawPeil(now){
                     : o.cls === 'taghell' ? '#e0b66e' : 'rgba(124,144,175,.5)';
     pctx.shadowColor = pctx.fillStyle; pctx.shadowBlur = 5*DPR; pctx.fill(); pctx.shadowBlur = 0;
     if (isSel){ pctx.beginPath(); pctx.arc(x, y, rad+3.5*DPR, 0, 7); pctx.strokeStyle = '#e8eef9'; pctx.lineWidth = 1*DPR; pctx.stroke(); }
-    if (isIss || isSel){
-      pctx.fillStyle = isIss ? '#ffc857' : '#cbd5e5';
-      pctx.fillText(isIss ? 'ISS' : shortName(s.name), x, y - (rad + 9*DPR));
-    }
+    peilLabels.push({ x, y, rad, name: isIss ? 'ISS' : shortName(s.name), isIss, isSel, mag: s.mag === null ? 9 : s.mag });
+  }
+  /* Beschriftung aller Objekte im Fenster - Prioritaet ISS/Auswahl/hell, Kollisionsschutz */
+  peilLabels.sort((a,b) => (a.isIss ? 0 : a.isSel ? 1 : 2) - (b.isIss ? 0 : b.isSel ? 1 : 2) || a.mag - b.mag);
+  const placedP = [];
+  let shownP = 0;
+  for (const L of peilLabels){
+    if (!L.isIss && !L.isSel && shownP >= 10) continue;
+    const lx = L.x, ly = L.y - (L.rad + 9*DPR);
+    if (!L.isIss && !L.isSel && placedP.some(p => Math.abs(p.x-lx) < 60*DPR && Math.abs(p.y-ly) < 14*DPR)) continue;
+    placedP.push({ x: lx, y: ly });
+    pctx.fillStyle = L.isIss ? '#ffc857' : L.isSel ? '#e8eef9' : 'rgba(190,205,228,.85)';
+    pctx.fillText(L.name, lx, ly);
+    shownP++;
   }
   /* Handy zeigt auf den Boden: klarer Hinweis statt leerem Fenster */
   if (pel < -25){
