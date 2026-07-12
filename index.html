@@ -7,7 +7,7 @@
 <meta name="theme-color" content="#05080f">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>Satellitenhimmel v0.6</title>
+<title>Satellitenhimmel v0.7</title>
 <style>
 :root{
   --bg0:#05080f; --bg1:#0b1220; --bg2:#101a2e; --line:#1d2a42;
@@ -129,6 +129,20 @@ section.act{display:flex}
 .srow .sn{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .srow .sn small{color:var(--dim);font-size:11px;margin-left:5px}
 .srow .c{text-align:right;color:var(--mut)} .srow .c b{color:var(--ink);font-weight:600}
+/* ---------- Peilen ---------- */
+#peilWrap{flex:1;min-height:0;position:relative;margin:8px 14px 0;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:#04070e}
+#peil{position:absolute;inset:0;width:100%;height:100%;display:block}
+#peilPerm{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;
+  padding:24px;background:rgba(4,7,14,.94);text-align:center;font-size:14px;color:var(--mut)}
+#peilPerm .btn{flex:none;width:auto;padding:11px 22px}
+#peilPerm .hint{font-size:12px;color:var(--dim);min-height:16px}
+#peilGuide{flex:none;margin:8px 14px 0;padding:8px 12px;height:40px;display:flex;align-items:center;gap:8px;
+  background:var(--bg1);border:1px solid var(--line);border-radius:12px;font-size:13.5px;overflow:hidden}
+#peilGuide .tag{flex:none;color:var(--iss);font-weight:700}
+#peilGuide span:last-child{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#peilBar{flex:none;margin:7px 14px 10px;display:flex;align-items:center;gap:10px;font-size:12px;color:var(--dim)}
+#peilBar .chip{flex:none}
+#peilPoint{min-width:96px}
 /* ---------- Toast ---------- */
 #toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom));transform:translateX(-50%) translateY(20px);
   max-width:86vw;background:var(--bg2);border:1px solid #2c3f63;color:var(--ink);padding:9px 16px;border-radius:12px;
@@ -153,6 +167,7 @@ section.act{display:flex}
   <button data-v="sky" class="act" type="button">Himmel</button>
   <button data-v="pass" type="button">P&auml;sse</button>
   <button data-v="list" type="button">Liste</button>
+  <button data-v="peil" type="button">Peilen</button>
 </div>
 
 <main>
@@ -188,6 +203,21 @@ section.act{display:flex}
     <div id="passList"></div>
   </section>
 
+  <section id="view-peil">
+    <div id="peilWrap"><canvas id="peil"></canvas>
+      <div id="peilPerm">
+        <p>F&uuml;r den Peilmodus braucht Safari Zugriff auf die Lagesensoren.</p>
+        <button class="btn pri" id="btnSens" type="button">Sensoren aktivieren</button>
+        <p class="hint" id="peilPermHint"></p>
+      </div>
+    </div>
+    <div id="peilGuide"><span class="tag" id="pgName">ISS</span><span id="pgTxt">&ndash;</span></div>
+    <div id="peilBar">
+      <span id="peilPoint" class="num">&ndash;</span>
+      <button class="chip" id="btnKal" type="button">Kalibrieren</button>
+      <span id="peilKalTxt">Kompass (&plusmn;5&ndash;10&deg;)</span>
+    </div>
+  </section>
   <section id="view-list">
     <div id="listHead">
       <span id="listCount">–</span>
@@ -203,6 +233,7 @@ section.act{display:flex}
   <div class="sub">Bestimmt Himmelskarte, Liste und &Uuml;berflugzeiten. Wird lokal gespeichert.</div>
   <div id="presetRow">
     <button class="chip" data-p="Wettenberg|50.61|8.65|0.20" type="button">Wettenberg</button>
+    <button class="chip" data-p="Cannobio|46.096|8.695|0.21" type="button">Cannobio</button>
     <button class="chip" data-p="Gie&szlig;en|50.585|8.678|0.16" type="button">Gie&szlig;en</button>
     <button class="chip" data-p="Frankfurt|50.11|8.68|0.11" type="button">Frankfurt</button>
     <button class="chip" data-p="M&uuml;nchen|48.14|11.58|0.52" type="button">M&uuml;nchen</button>
@@ -539,6 +570,22 @@ const SH = (function(){
     return { alt: la.elevation*R2D, az: ((la.azimuth*R2D)%360+360)%360,
              dist: p.dist, illum, waxing: dl < 180 };
   }
+  /* Geraete-Euler (W3C deviceorientation: intrinsisch Z-X'-Y'') -> Peilrichtung
+     der Rueckkamera (-z-Achse) im Erdsystem (X=Ost, Y=Nord, Z=oben).
+     azRaw hat auf iOS beliebigen Nullpunkt (alpha) - Offset kommt aus Kompass
+     oder Sonnen-/Mondkalibrierung. yawY = Azimut der Geraete-Oberkante
+     (das ist die Groesse, die webkitCompassHeading magnetisch misst). */
+  function eulerToPointing(alphaDeg, betaDeg, gammaDeg){
+    const a = alphaDeg*D2R, b = betaDeg*D2R, g = gammaDeg*D2R;
+    const x = -Math.cos(a)*Math.sin(g) - Math.sin(a)*Math.sin(b)*Math.cos(g);
+    const y = -Math.sin(a)*Math.sin(g) + Math.cos(a)*Math.sin(b)*Math.cos(g);
+    const z = -Math.cos(b)*Math.cos(g);
+    const el = Math.asin(Math.max(-1, Math.min(1, z)))*R2D;
+    const azRaw = ((Math.atan2(x, y)*R2D) % 360 + 360) % 360;
+    const yx = -Math.sin(a)*Math.cos(b), yy = Math.cos(a)*Math.cos(b), yz = Math.sin(b);
+    const yawY = ((Math.atan2(yx, yy)*R2D) % 360 + 360) % 360;
+    return { azRaw, el, yawY, yFlat: Math.abs(yz) < 0.6 };
+  }
   /* Winkelabstand zweier Himmelspositionen (Grad) */
   function angSep(az1, el1, az2, el2){
     const c = Math.sin(el1*D2R)*Math.sin(el2*D2R) +
@@ -582,7 +629,7 @@ const SH = (function(){
     return win;
   }
   return { jdFromDate, compass, sunRaDec, sunAltAz, isSunlit, makeSats, observe, findPasses,
-           apparentMag, nightWindows, obsEci, moonAltAz, angSep, D2R, R2D };
+           apparentMag, nightWindows, obsEci, moonAltAz, angSep, eulerToPointing, D2R, R2D };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = SH;
 </script>
@@ -596,7 +643,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = SH;
 if (typeof document === 'undefined') return;
 
 /* ---------- Konfiguration ---------- */
-const APP_VERSION   = '0.6';
+const APP_VERSION   = '0.7';
 const OBS_DEFAULT   = { name: 'Wettenberg', lat: 50.61, lon: 8.65, altKm: 0.20 };
 const OBS_KEY       = 'satHimmel.obs.v1';
 const MIN_PASS_EL   = 10;      /* Grad */
@@ -1046,6 +1093,7 @@ function renderList(){
 function loop(){
   rafId = requestAnimationFrame(loop);
   const now = new Date(), ms = now.getTime();
+  if (curView === 'peil') drawPeil(now);
   if (ms - lastFull >= 500 && sats.length){
     const sunA = computeAll(now);
     /* Spur + Vorausbahn des gewaehlten Objekts */
@@ -1101,6 +1149,12 @@ function switchView(v){
   document.querySelectorAll('main section').forEach(s => s.classList.toggle('act', s.id === 'view-' + v));
   if (v === 'pass') renderPasses();
   if (v === 'list'){ renderList(); lastList = Date.now(); }
+  if (v === 'peil'){
+    sizePeil();
+    if (!peil.granted && !(typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function')){
+      attachSens();   /* Android/Desktop: sofort lauschen */
+    }
+  }
 }
 document.querySelectorAll('#tabs button').forEach(b => b.addEventListener('click', () => switchView(b.dataset.v)));
 
@@ -1159,7 +1213,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden){ if (rafId) cancelAnimationFrame(rafId), rafId = null; }
   else if (!rafId){ lastFull = 0; loop(); }
 });
-addEventListener('resize', () => { sizeDome(); });
+addEventListener('resize', () => { sizeDome(); sizePeil(); });
 
 /* ---------- Paesse aller Objekte, in Haeppchen (blockiert die UI nicht) ----------
    Nur Nachtfenster (Sonne < -6 Grad) werden durchsucht: spart bei 24-72 h rund 60-70 %
@@ -1260,6 +1314,192 @@ $('btnGps').addEventListener('click', () => {
     $('locErr').textContent = m;
   }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
 });
+
+/* ---------- Peilmodus ----------
+   Elevation: aus Schwerkraft (zuverlaessig). Azimut: alpha hat auf iOS einen
+   beliebigen Nullpunkt -> Offset. Quellen fuer den Offset, in aufsteigender Guete:
+   1. webkitCompassHeading (magnetisch, +-5-10 Grad; nur uebernommen, solange die
+      Geraete-Oberkante flach genug liegt, denn nur dann ist die Messung brauchbar)
+      + feste Missweisung MAG_DECL.
+   2. Sonnen-/Mond-Kalibrierung: Kreuz auf das Gestirn halten, Tipp -> Offset exakt. */
+const MAG_DECL = 3.5;   /* Grad Ost, Mitteleuropa 2026, Restfehler frisst die Kalibrierung */
+const peil = { granted: false, evt: null, offset: null, offsetSrc: 'auto',
+               az: null, el: null, lastDraw: 0 };
+
+function sensSupported(){ return typeof DeviceOrientationEvent !== 'undefined' || typeof window.ondeviceorientation !== 'undefined'; }
+function attachSens(){
+  window.addEventListener('deviceorientation', onOrient, true);
+  peil.granted = true;
+  $('peilPerm').style.display = 'none';
+}
+$('btnSens').addEventListener('click', () => {
+  const inFrame2 = (function(){ try{ return window.self !== window.top; }catch(e){ return true; } })();
+  if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function'){
+    DeviceOrientationEvent.requestPermission().then(st => {
+      if (st === 'granted') attachSens();
+      else $('peilPermHint').textContent = inFrame2
+        ? 'Blockiert - in der eingebetteten Vorschau sind Sensoren gesperrt. In Safari (GitHub Pages) klappt es.'
+        : 'Abgelehnt. Seite neu laden und erneut versuchen.';
+    }).catch(() => {
+      $('peilPermHint').textContent = inFrame2
+        ? 'Blockiert - in der eingebetteten Vorschau sind Sensoren gesperrt. In Safari (GitHub Pages) klappt es.'
+        : 'Sensorzugriff nicht m\u00f6glich.';
+    });
+  } else attachSens();   /* Android/Desktop: keine Abfrage noetig */
+});
+function onOrient(e){
+  if (e.alpha === null && e.webkitCompassHeading === undefined) return;
+  peil.evt = { alpha: e.alpha || 0, beta: e.beta || 0, gamma: e.gamma || 0,
+               head: (typeof e.webkitCompassHeading === 'number' && e.webkitCompassHeading >= 0) ? e.webkitCompassHeading : null };
+  const p = SH.eulerToPointing(peil.evt.alpha, peil.evt.beta, peil.evt.gamma);
+  /* Auto-Offset nur aus verlaesslichen Lagen und nur solange nicht kalibriert */
+  if (peil.offsetSrc === 'auto' && peil.evt.head !== null && p.yFlat){
+    /* wahres Azimut der Oberkante = Kompasskurs (magnetisch) + Missweisung;
+       Offset = wahres Azimut - Matrix-Azimut derselben Achse */
+    const off = (((peil.evt.head + MAG_DECL) - p.yawY) % 360 + 360) % 360;
+    peil.offset = peil.offset === null ? off : peil.offset + (((off - peil.offset + 540) % 360) - 180) * 0.1;
+  }
+  /* Glaetten */
+  const az = peil.offset === null ? p.azRaw : ((p.azRaw + peil.offset) % 360 + 360) % 360;
+  if (peil.az === null){ peil.az = az; peil.el = p.el; }
+  else {
+    peil.az = ((peil.az + (((az - peil.az + 540) % 360) - 180) * 0.25) % 360 + 360) % 360;
+    peil.el = peil.el + (p.el - peil.el) * 0.25;
+  }
+}
+/* Kalibrieren: Kreuz auf Sonne oder Mond, dann Offset exakt setzen */
+function kalTarget(){
+  const su = SH.sunAltAz(new Date(), obsGd);
+  if (su.alt > -1) return { name: 'Sonne', az: su.az, el: su.alt };
+  const mo = SH.moonAltAz(new Date(), obsGd);
+  if (mo.alt > -1 && mo.illum > 0.05) return { name: 'Mond', az: mo.az, el: mo.alt };
+  return null;
+}
+$('btnKal').addEventListener('click', () => {
+  const t = kalTarget();
+  if (!t){ toast('Weder Sonne noch Mond \u00fcber dem Horizont \u2013 sp\u00e4ter kalibrieren'); return; }
+  if (!peil.evt){ toast('Noch keine Sensordaten'); return; }
+  const p = SH.eulerToPointing(peil.evt.alpha, peil.evt.beta, peil.evt.gamma);
+  peil.offset = ((t.az - p.azRaw) % 360 + 360) % 360;
+  peil.offsetSrc = 'kal';
+  peil.az = t.az;   /* Glaettung sofort nachziehen */
+  $('peilKalTxt').textContent = 'kalibriert auf ' + t.name;
+  toast('Kalibriert auf ' + t.name + ' \u2013 Azimut sitzt jetzt');
+});
+
+/* Zeichnen: Fenster +-27 Grad horizontal um die Peilrichtung */
+const peilCv = $('peil');
+const pctx = peilCv.getContext ? peilCv.getContext('2d') : null;
+function sizePeil(){
+  const r = peilCv.parentElement.getBoundingClientRect();
+  if (r.width < 10) return;
+  peilCv.width = Math.round(r.width*DPR); peilCv.height = Math.round(r.height*DPR);
+}
+function drawPeil(now){
+  if (!pctx || !peilCv.width) return;
+  const W = peilCv.width, H = peilCv.height, cx = W/2, cy = H/2;
+  const k = W/54;   /* px pro Grad */
+  pctx.clearRect(0,0,W,H);
+  pctx.fillStyle = '#04070e'; pctx.fillRect(0,0,W,H);
+  if (peil.az === null){
+    pctx.fillStyle = '#5d6f8f'; pctx.font = 500 + ' ' + 13*DPR + 'px -apple-system,sans-serif';
+    pctx.textAlign = 'center'; pctx.fillText('warte auf Sensordaten \u2026', cx, cy);
+    return;
+  }
+  const paz = peil.az, pel = peil.el;
+  const dx = a => (((a - paz + 540) % 360) - 180) * Math.cos(pel*SH.D2R) * k;
+  const dy = e => -(e - pel) * k;
+  /* Hoehenlinien alle 10 Grad + Horizont */
+  pctx.textAlign = 'left'; pctx.textBaseline = 'middle';
+  pctx.font = 500 + ' ' + 9.5*DPR + 'px -apple-system,sans-serif';
+  for (let e = -20; e <= 90; e += 10){
+    const y = cy + dy(e);
+    if (y < -20 || y > H+20) continue;
+    pctx.strokeStyle = e === 0 ? '#31445f' : '#141f33';
+    pctx.lineWidth = (e === 0 ? 1.6 : 1)*DPR;
+    pctx.beginPath(); pctx.moveTo(0,y); pctx.lineTo(W,y); pctx.stroke();
+    pctx.fillStyle = '#54648a';
+    pctx.fillText(e === 0 ? 'Horizont' : e + '\u00b0', 6*DPR, y - 6*DPR);
+  }
+  /* Azimut-Marken alle 15 Grad auf Horizontlinie + Kompassbuchstaben */
+  pctx.textAlign = 'center';
+  for (let a = 0; a < 360; a += 15){
+    const x = cx + dx(a);
+    if (x < -30 || x > W+30) continue;
+    const y0 = cy + dy(0);
+    pctx.strokeStyle = '#233450'; pctx.lineWidth = 1*DPR;
+    pctx.beginPath(); pctx.moveTo(x, y0-4*DPR); pctx.lineTo(x, y0+4*DPR); pctx.stroke();
+    if (a % 45 === 0 && y0 > -10 && y0 < H+10){
+      pctx.fillStyle = '#8ea2c0';
+      pctx.fillText(SH.compass(a), x, Math.min(Math.max(y0 + 14*DPR, 12*DPR), H - 12*DPR));
+    }
+  }
+  /* Sonne + Mond */
+  const su = SH.sunAltAz(now, obsGd);
+  if (Math.abs(dx(su.az)) < W && Math.abs(dy(su.alt)) < H){
+    const x = cx + dx(su.az), y = cy + dy(su.alt);
+    pctx.beginPath(); pctx.arc(x, y, 6*DPR, 0, 7); pctx.fillStyle = '#ffdf8e'; pctx.fill();
+    pctx.fillStyle = '#c8b078'; pctx.fillText('Sonne', x, y - 12*DPR);
+  }
+  const mo = SH.moonAltAz(now, obsGd);
+  if (Math.abs(dx(mo.az)) < W && Math.abs(dy(mo.alt)) < H){
+    const x = cx + dx(mo.az), y = cy + dy(mo.alt);
+    pctx.beginPath(); pctx.arc(x, y, 5*DPR, 0, 7); pctx.fillStyle = 'rgba(226,232,244,.85)'; pctx.fill();
+    pctx.fillStyle = '#aab6cc'; pctx.fillText('Mond', x, y - 11*DPR);
+  }
+  /* Satelliten aus snap */
+  for (const {s,o} of snap){
+    if (o.el < -5) continue;
+    const x = cx + dx(o.az), y = cy + dy(o.el);
+    if (x < -20 || x > W+20 || y < -20 || y > H+20) continue;
+    const isIss = s.catnr === 25544, isSel = s.catnr === selected;
+    const m = s.mag === null ? 5 : s.mag;
+    let rad = Math.max(2.1, Math.min(4.6, 4.6 - 0.42*m))*DPR;
+    if (isIss) rad = 5.5*DPR;
+    pctx.beginPath(); pctx.arc(x, y, rad, 0, 7);
+    pctx.fillStyle = o.cls === 'sichtbar' || isIss ? (isIss ? '#ffc857' : '#9ff2c4')
+                    : o.cls === 'taghell' ? '#e0b66e' : 'rgba(124,144,175,.5)';
+    pctx.shadowColor = pctx.fillStyle; pctx.shadowBlur = 5*DPR; pctx.fill(); pctx.shadowBlur = 0;
+    if (isSel){ pctx.beginPath(); pctx.arc(x, y, rad+3.5*DPR, 0, 7); pctx.strokeStyle = '#e8eef9'; pctx.lineWidth = 1*DPR; pctx.stroke(); }
+    if (isIss || isSel){
+      pctx.fillStyle = isIss ? '#ffc857' : '#cbd5e5';
+      pctx.fillText(isIss ? 'ISS' : shortName(s.name), x, y - (rad + 9*DPR));
+    }
+  }
+  /* Fadenkreuz */
+  pctx.strokeStyle = 'rgba(232,238,249,.85)'; pctx.lineWidth = 1.4*DPR;
+  pctx.beginPath();
+  pctx.moveTo(cx-14*DPR,cy); pctx.lineTo(cx-5*DPR,cy); pctx.moveTo(cx+5*DPR,cy); pctx.lineTo(cx+14*DPR,cy);
+  pctx.moveTo(cx,cy-14*DPR); pctx.lineTo(cx,cy-5*DPR); pctx.moveTo(cx,cy+5*DPR); pctx.lineTo(cx,cy+14*DPR);
+  pctx.stroke();
+  pctx.beginPath(); pctx.arc(cx,cy,3*DPR,0,7); pctx.stroke();
+  /* Zielfuehrung zum gewaehlten Objekt */
+  const sel = snap.find(e => e.s.catnr === selected);
+  if (sel){
+    const tx = dx(sel.o.az), ty = dy(sel.o.el);
+    const sep = SH.angSep(sel.o.az, sel.o.el, paz, pel);
+    if (sep < 3){
+      pctx.beginPath(); pctx.arc(cx+tx, cy+ty, 16*DPR, 0, 7);
+      pctx.strokeStyle = '#8df0be'; pctx.lineWidth = 2*DPR; pctx.stroke();
+      $('pgTxt').textContent = 'GETROFFEN \u2013 ' + sel.s.name + ' im Kreuz (' + sep.toFixed(1).replace('.',',') + '\u00b0)';
+    } else {
+      const ang = Math.atan2(ty, tx);
+      const rr = Math.min(cx, cy) - 26*DPR;
+      const ax = cx + rr*Math.cos(ang), ay = cy + rr*Math.sin(ang);
+      pctx.save(); pctx.translate(ax, ay); pctx.rotate(ang);
+      pctx.beginPath(); pctx.moveTo(10*DPR,0); pctx.lineTo(-7*DPR,-7*DPR); pctx.lineTo(-7*DPR,7*DPR); pctx.closePath();
+      pctx.fillStyle = '#ffc857'; pctx.fill(); pctx.restore();
+      const dAz = ((sel.o.az - paz + 540) % 360) - 180;
+      const dEl = sel.o.el - pel;
+      const h = Math.abs(dAz) < 3 ? '' : Math.abs(dAz).toFixed(0) + '\u00b0 ' + (dAz > 0 ? 'rechts' : 'links');
+      const v = Math.abs(dEl) < 3 ? '' : Math.abs(dEl).toFixed(0) + '\u00b0 ' + (dEl > 0 ? 'h\u00f6her' : 'tiefer');
+      $('pgTxt').textContent = (sel.o.el <= 0 ? 'unter Horizont \u00b7 ' : '') + [h, v].filter(Boolean).join(', ');
+    }
+    $('pgName').textContent = shortName(sel.s.name);
+  }
+  $('peilPoint').textContent = 'Blick: ' + SH.compass(paz) + ' ' + Math.round(paz) + '\u00b0 / ' + Math.round(pel) + '\u00b0' +
+    (Math.abs(pel) > 80 ? ' \u00b7 fast senkrecht' : '');
+}
 
 /* ---------- Start ---------- */
 async function init(){
