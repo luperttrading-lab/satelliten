@@ -7,7 +7,7 @@
 <meta name="theme-color" content="#05080f">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>Satellitenhimmel v0.5</title>
+<title>Satellitenhimmel v0.6</title>
 <style>
 :root{
   --bg0:#05080f; --bg1:#0b1220; --bg2:#101a2e; --line:#1d2a42;
@@ -490,6 +490,61 @@ const SH = (function(){
     return passes;
   }
 
+  /* Mondposition, Meeus Kap. 47 gekuerzt (~0,2 Grad Laenge, ~0,1 Grad Breite).
+     Ausgabe als ECI-Vektor -> Topozentrik (inkl. Parallaxe ~1 Grad!) laeuft ueber
+     dieselbe Pipeline wie Satelliten und Sonne. */
+  function moonEclip(jd){
+    const d = jd - 2451545.0;
+    const rad = x => ((x % 360) + 360) % 360 * D2R;
+    const Lp = rad(218.3164477 + 13.17639648*d);
+    const D  = rad(297.8501921 + 12.19074912*d);
+    const M  = rad(357.5291092 + 0.98560028*d);
+    const Mp = rad(134.9633964 + 13.06499295*d);
+    const F  = rad(93.2720950  + 13.22935024*d);
+    const lon = Lp
+      + ( 6.288774*Math.sin(Mp) + 1.274027*Math.sin(2*D-Mp) + 0.658314*Math.sin(2*D)
+        + 0.213618*Math.sin(2*Mp) - 0.185116*Math.sin(M) - 0.114332*Math.sin(2*F)
+        + 0.058793*Math.sin(2*D-2*Mp) + 0.057066*Math.sin(2*D-M-Mp)
+        + 0.053322*Math.sin(2*D+Mp) + 0.045758*Math.sin(2*D-M) ) * D2R;
+    const lat = ( 5.128122*Math.sin(F) + 0.280602*Math.sin(Mp+F) + 0.277693*Math.sin(Mp-F)
+        + 0.173237*Math.sin(2*D-F) + 0.055413*Math.sin(2*D+F-Mp) + 0.046271*Math.sin(2*D-F-Mp) ) * D2R;
+    const dist = 385000.56 - 20905.355*Math.cos(Mp) - 3699.111*Math.cos(2*D-Mp)
+        - 2955.968*Math.cos(2*D) - 569.925*Math.cos(2*Mp);
+    return { lon, lat, dist };
+  }
+  function moonEci(jd){
+    const m = moonEclip(jd);
+    const eps = (23.439 - 0.0000004*(jd-2451545.0))*D2R;
+    const x = m.dist*Math.cos(m.lat)*Math.cos(m.lon);
+    const y = m.dist*(Math.cos(m.lat)*Math.sin(m.lon)*Math.cos(eps) - Math.sin(m.lat)*Math.sin(eps));
+    const z = m.dist*(Math.cos(m.lat)*Math.sin(m.lon)*Math.sin(eps) + Math.sin(m.lat)*Math.cos(eps));
+    return { x, y, z, eclLon: m.lon, dist: m.dist };
+  }
+  function moonAltAz(date, obsGd){
+    const jd = jdFromDate(date);
+    const p = moonEci(jd);
+    const la = satellite.ecfToLookAngles(obsGd, satellite.eciToEcf(p, satellite.gstime(date)));
+    /* Beleuchtungsgrad: k = (1 - cos(Elongation))/2; zunehmend wenn Mond der Sonne
+       oestlich nachlaeuft (0 < lonM - lonS < 180) */
+    const n = jd - 2451545.0;
+    const Ls = (((280.460 + 0.9856474*n)%360)+360)%360*D2R;
+    const g  = (((357.528 + 0.9856003*n)%360)+360)%360*D2R;
+    const lamS = Ls + (1.915*Math.sin(g) + 0.020*Math.sin(2*g))*D2R;
+    const sM = sunRaDec(jd);
+    /* Elongation aus RA/Dec von Sonne und Mond (robust, keine Ekliptik-Naeherung) */
+    const raM = Math.atan2(p.y, p.x), decM = Math.asin(p.z/Math.hypot(p.x,p.y,p.z));
+    const cpsi = Math.sin(sM.dec)*Math.sin(decM) + Math.cos(sM.dec)*Math.cos(decM)*Math.cos(sM.ra - raM);
+    const illum = (1 - cpsi) / 2;
+    const dl = ((p.eclLon - lamS) / D2R % 360 + 360) % 360;
+    return { alt: la.elevation*R2D, az: ((la.azimuth*R2D)%360+360)%360,
+             dist: p.dist, illum, waxing: dl < 180 };
+  }
+  /* Winkelabstand zweier Himmelspositionen (Grad) */
+  function angSep(az1, el1, az2, el2){
+    const c = Math.sin(el1*D2R)*Math.sin(el2*D2R) +
+              Math.cos(el1*D2R)*Math.cos(el2*D2R)*Math.cos((az1-az2)*D2R);
+    return Math.acos(Math.max(-1, Math.min(1, c)))*R2D;
+  }
   /* Beobachterposition im ECI (fuer Phasenwinkel) */
   function obsEci(date, obsGd){
     const ecf = satellite.geodeticToEcf(obsGd);
@@ -527,7 +582,7 @@ const SH = (function(){
     return win;
   }
   return { jdFromDate, compass, sunRaDec, sunAltAz, isSunlit, makeSats, observe, findPasses,
-           apparentMag, nightWindows, obsEci, D2R, R2D };
+           apparentMag, nightWindows, obsEci, moonAltAz, angSep, D2R, R2D };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = SH;
 </script>
@@ -541,7 +596,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = SH;
 if (typeof document === 'undefined') return;
 
 /* ---------- Konfiguration ---------- */
-const APP_VERSION   = '0.5';
+const APP_VERSION   = '0.6';
 const OBS_DEFAULT   = { name: 'Wettenberg', lat: 50.61, lon: 8.65, altKm: 0.20 };
 const OBS_KEY       = 'satHimmel.obs.v1';
 const MIN_PASS_EL   = 10;      /* Grad */
@@ -766,6 +821,21 @@ function drawDome(now, sunA){
     ctx.beginPath(); ctx.arc(sx,sy,10*DPR,0,7); ctx.fillStyle = sg; ctx.fill();
     ctx.beginPath(); ctx.arc(sx,sy,3.5*DPR,0,7); ctx.fillStyle = '#ffdf8e'; ctx.fill();
   }
+  /* Mond */
+  const moon = SH.moonAltAz(now, obsGd);
+  if (moon.alt > -1){
+    const [mx, my] = proj(moon.az, Math.max(moon.alt, 0), R, cx, cy);
+    const mr = 4.6*DPR, a = 0.45 + 0.55*moon.illum;
+    ctx.beginPath(); ctx.arc(mx, my, mr, 0, 7);
+    ctx.fillStyle = 'rgba(226,232,244,' + a.toFixed(2) + ')';
+    ctx.shadowColor = '#e2e8f4'; ctx.shadowBlur = 7*DPR*moon.illum;
+    ctx.fill(); ctx.shadowBlur = 0;
+    ctx.strokeStyle = 'rgba(226,232,244,.8)'; ctx.lineWidth = 1*DPR; ctx.stroke();
+    ctx.fillStyle = 'rgba(203,213,229,.9)';
+    ctx.font = 600 + ' ' + 10*DPR + 'px -apple-system,sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('Mond ' + Math.round(moon.illum*100) + ' %', mx, my - (mr + 7*DPR));
+  }
   /* Vorausbahn des gewaehlten Objekts (gepunktet) */
   ctx.fillStyle = 'rgba(255,200,87,.55)';
   for (const p of fwdPath){
@@ -895,6 +965,11 @@ function updateInfoCard(){
   const a = arcs.find(k => k.catnr === e.s.catnr);
   $('icRate').textContent = a ? fmtRate(a) : '';
 }
+function moonWord(){
+  const m = SH.moonAltAz(new Date(), obsGd);
+  if (m.alt <= 0) return 'Mond unter Horizont';
+  return 'Mond ' + Math.round(m.illum*100) + ' %, ' + Math.round(m.alt) + '\u00b0 ' + SH.compass(m.az);
+}
 function updateIssChip(nowMs){
   const e = snap.find(x => x.s.catnr === 25544);
   let txt;
@@ -920,13 +995,18 @@ function renderPasses(){
       (vis.mag !== null ? ' \u00b7 ' + (vis.mag <= 0 ? '' : '+') + vis.mag.toFixed(1).replace('.',',') + ' mag' : '')
     : 'keiner in den n\u00e4chsten ' + PASS_HOURS + ' h';
   $('passMeta').textContent = passScan.done
-    ? shown.length + (brightOnly ? ' helle' : '') + ' \u00dcberfl\u00fcge \u00b7 ' + PASS_HOURS + ' h \u00b7 ab ' + MIN_PASS_EL + '\u00b0'
+    ? shown.length + (brightOnly ? ' helle' : '') + ' \u00dcberfl\u00fcge \u00b7 ' + PASS_HOURS + ' h \u00b7 ' + moonWord()
     : 'rechne \u2026 ' + passScan.i + '/' + passScan.n + ' Objekte';
   for (const p of shown){
     const div = document.createElement('div'); div.className = 'pass';
     let extra = '';
     if (p.shadowAt){
       extra = ' \u00b7 Schatten ab ' + fmtHM.format(new Date(p.shadowAt)) + ' (' + Math.round(p.shadowEl) + '\u00b0)';
+    }
+    const mn = SH.moonAltAz(new Date(p.culm), obsGd);
+    if (mn.alt > 0 && mn.illum >= 0.10){
+      const sep = SH.angSep(mn.az, mn.alt, p.azCulm, p.maxEl);
+      extra += ' \u00b7 \u263d ' + Math.round(mn.illum*100) + ' %, ' + Math.round(sep) + '\u00b0 entfernt';
     }
     div.className = 'pass' + (p.catnr === 25544 ? ' iss' : '');
     div.dataset.cat = p.catnr;
@@ -1002,7 +1082,7 @@ function dedupePasses(){
       Math.abs(q.culm - p.culm) < 90000 &&
       Math.abs(q.maxEl - p.maxEl) < 3 &&
       Math.abs(((q.azCulm - p.azCulm + 540) % 360) - 180) < 8);
-    if (!twin){ p.mates = 0; out.push(p); continue; }
+    if (!twin){ p.mates = p.mates || 0; out.push(p); continue; }   /* Zaehler bei Re-Dedupe erhalten */
     twin.mates = (twin.mates || 0) + 1;
     const mp = p.mag === null ? 99 : p.mag, mt = twin.mag === null ? 99 : twin.mag;
     if (mp < mt){                                  /* helleres Objekt uebernimmt die Zeile */
