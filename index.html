@@ -7,7 +7,7 @@
 <meta name="theme-color" content="#05080f">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>Satellitenhimmel v0.3</title>
+<title>Satellitenhimmel v0.4</title>
 <style>
 :root{
   --bg0:#05080f; --bg1:#0b1220; --bg2:#101a2e; --line:#1d2a42;
@@ -85,7 +85,8 @@ section.act{display:flex}
   background:var(--bg1);border:1px solid var(--line);border-radius:12px;overflow:hidden}
 #infoCard .n{display:flex;align-items:baseline;gap:8px}
 #infoCard .name{font-weight:700;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#infoCard .st{margin-left:auto;flex:none;font-size:11px;font-weight:700;letter-spacing:.05em;padding:1px 8px;border-radius:999px;border:1px solid var(--line)}
+#infoCard .rate{margin-left:auto;flex:none;font-size:11.5px;color:var(--mut);white-space:nowrap}
+#infoCard .st{margin-left:8px;flex:none;font-size:11px;font-weight:700;letter-spacing:.05em;padding:1px 8px;border-radius:999px;border:1px solid var(--line)}
 #infoCard .d{margin-top:6px;display:grid;grid-template-columns:repeat(4,1fr);gap:4px;font-size:12.5px;color:var(--mut)}
 #infoCard .d b{display:block;color:var(--ink);font-size:14px;font-weight:600}
 #legend{flex:none;margin:7px 14px;font-size:11px;color:var(--dim);text-align:center;line-height:1.5}
@@ -154,7 +155,7 @@ section.act{display:flex}
     <div id="skyWrap"><canvas id="dome"></canvas></div>
     <div id="issChip"><span class="tag">ISS</span><span class="txt" id="issTxt">–</span></div>
     <div id="infoCard">
-      <div class="n"><span class="name" id="icName">–</span><span class="st" id="icState"></span></div>
+      <div class="n"><span class="name" id="icName">–</span><span class="rate num" id="icRate"></span><span class="st" id="icState"></span></div>
       <div class="d">
         <span>Elevation<b class="num" id="icEl">–</b></span>
         <span>Richtung<b class="num" id="icAz">–</b></span>
@@ -166,7 +167,7 @@ section.act{display:flex}
       Karte f&uuml;r Blick nach oben: N oben, <b>O links</b> &nbsp;&middot;&nbsp;
       <i><span style="color:var(--vis)">&#9679;</span> sichtbar</i> &nbsp;
       <i><span style="color:var(--sh)">&#9675;</span> Erdschatten</i> &nbsp;
-      <i><span style="color:var(--day)">&#9679;</span> Tageshimmel</i> &nbsp;&middot;&nbsp; Linien = Bahn der n&auml;chsten 6 min &middot; Tippen w&auml;hlt Objekt
+      <i><span style="color:var(--day)">&#9679;</span> Tageshimmel</i> &nbsp;&middot;&nbsp; Linie = Bahn der n&auml;chsten 6 min &middot; &#9670; quasi station&auml;r &middot; Tippen w&auml;hlt Objekt
     </div>
   </section>
 
@@ -494,7 +495,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = SH;
 if (typeof document === 'undefined') return;
 
 /* ---------- Konfiguration ---------- */
-const APP_VERSION   = '0.3';
+const APP_VERSION   = '0.4';
 const OBS_DEFAULT   = { name: 'Wettenberg', lat: 50.61, lon: 8.65, altKm: 0.20 };
 const OBS_KEY       = 'satHimmel.obs.v1';
 const MIN_PASS_EL   = 10;      /* Grad */
@@ -649,7 +650,16 @@ function computeArcs(nowMs){
       if (!ob) break;
       pts.push({ az: ob.az, el: ob.el });
     }
-    if (pts.length > 1) arcs.push({ catnr: s.catnr, cls: o.cls, pts });
+    if (pts.length > 1){
+      /* Winkelgeschwindigkeit am Himmel (Grad/min) aus den ersten 60 s */
+      const p0 = pts[0], p1 = pts[Math.min(2, pts.length-1)];
+      const dtMin = Math.min(2, pts.length-1) * 0.5;
+      const dAz = (p1.az - p0.az + 540) % 360 - 180;
+      const dEl = p1.el - p0.el;
+      const cosE = Math.cos((p0.el + p1.el)/2 * SH.D2R);
+      const rate = dtMin > 0 ? Math.hypot(dAz*cosE, dEl) / dtMin : 0;
+      arcs.push({ catnr: s.catnr, cls: o.cls, pts, rate, slow: rate < 0.15 });
+    }
   }
   lastArcs = nowMs;
 }
@@ -668,6 +678,14 @@ function sizeDome(){
 function proj(az, el, R, cx, cy){
   const r = (90 - Math.max(el, 0)) / 90 * R, a = az * SH.D2R;
   return [cx - r*Math.sin(a), cy - r*Math.cos(a)];   /* N oben, O links (Blick nach oben) */
+}
+function shortName(n){
+  return String(n).replace(/\s*\(.*?\)\s*/g, '').replace(/ R\/B$/, ' R/B').slice(0, 14);
+}
+function markPath(c, x, y, r, slow){
+  c.beginPath();
+  if (slow){ c.moveTo(x, y-r*1.25); c.lineTo(x+r*1.25, y); c.lineTo(x, y+r*1.25); c.lineTo(x-r*1.25, y); c.closePath(); }
+  else c.arc(x, y, r, 0, 7);
 }
 function drawDome(now, sunA){
   if (!ctx) return;
@@ -742,35 +760,55 @@ function drawDome(now, sunA){
     }
   }
   /* Satelliten */
+  const labelCand = [];
+  const rateOf = c => { const a = arcs.find(k => k.catnr === c); return a ? a.rate : null; };
   for (const {s,o} of snap){
     if (o.el <= 0) continue;
     const [x,y] = proj(o.az, o.el, R, cx, cy);
     const isIss = s.catnr === 25544, isSel = s.catnr === selected;
+    const rt = rateOf(s.catnr), isSlow = rt !== null && rt < 0.15;
     const m = s.mag === null ? 5 : s.mag;
     let rad = Math.max(2.1, Math.min(4.6, 4.6 - 0.42*m)) * DPR;
     if (isIss) rad = (5 + Math.sin(tNow/300)*0.8) * DPR;
     if (o.cls === 'sichtbar' || isIss){
-      ctx.beginPath(); ctx.arc(x,y,rad,0,7);
+      markPath(ctx, x, y, rad, isSlow);
       ctx.fillStyle = isIss ? '#ffc857' : '#9ff2c4';
       ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = 6*DPR;
       ctx.fill(); ctx.shadowBlur = 0;
     } else if (o.cls === 'taghell'){
-      ctx.beginPath(); ctx.arc(x,y,rad,0,7);
+      markPath(ctx, x, y, rad, isSlow);
       ctx.fillStyle = '#e0b66e'; ctx.shadowColor = '#e0b66e'; ctx.shadowBlur = 5*DPR;
       ctx.fill(); ctx.shadowBlur = 0;
     } else { /* Erdschatten */
-      ctx.beginPath(); ctx.arc(x,y,rad,0,7);
+      markPath(ctx, x, y, rad, isSlow);
       ctx.fillStyle = 'rgba(124,144,175,.35)'; ctx.fill();
       ctx.strokeStyle = '#8ea2c0'; ctx.lineWidth = 1.3*DPR; ctx.stroke();
     }
     if (isSel){
-      ctx.beginPath(); ctx.arc(x,y,rad+3.5*DPR,0,7); ctx.strokeStyle = '#e8eef9'; ctx.lineWidth = 1*DPR; ctx.stroke();
+      markPath(ctx, x, y, rad + 3.5*DPR, isSlow);
+      ctx.strokeStyle = '#e8eef9'; ctx.lineWidth = 1*DPR; ctx.stroke();
     }
-    if (isIss || s.catnr === 48274){
-      ctx.fillStyle = isIss ? '#ffc857' : '#8ea2c0';
-      ctx.font = 600 + ' ' + 10*DPR + 'px -apple-system,sans-serif';
-      ctx.fillText(isIss ? 'ISS' : 'CSS', x, y - (rad + 7*DPR));
-    }
+    labelCand.push({ s, o, x, y, rad, isIss, isSel });
+  }
+  /* Beschriftung: ISS/Tiangong/Auswahl immer, sonst die hellsten - mit Kollisionsschutz */
+  const placed = [];
+  labelCand.sort((a,b) => {
+    const pr = e => (e.isIss ? 0 : e.isSel ? 1 : e.s.catnr === 48274 ? 2 : 3);
+    return pr(a) - pr(b) || ((a.s.mag === null ? 9 : a.s.mag) - (b.s.mag === null ? 9 : b.s.mag));
+  });
+  ctx.font = 600 + ' ' + 10*DPR + 'px -apple-system,sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  let shown = 0;
+  for (const e of labelCand){
+    const forced = e.isIss || e.isSel || e.s.catnr === 48274;
+    if (!forced && (shown >= 7 || (e.s.mag !== null && e.s.mag > 4.5))) continue;
+    const lx = e.x, ly = e.y - (e.rad + 8*DPR);
+    if (!forced && placed.some(p => Math.hypot(p.x-lx, p.y-ly) < 34*DPR)) continue;
+    placed.push({ x: lx, y: ly });
+    const txt = shortName(e.s.name);
+    ctx.fillStyle = e.isIss ? '#ffc857' : e.isSel ? '#e8eef9' : 'rgba(174,192,216,.85)';
+    ctx.fillText(txt, lx, ly);
+    shown++;
   }
   /* ISS unter Horizont: Aufgangsmarke am Rand */
   const issSnap = snap.find(e => e.s.catnr === 25544);
@@ -788,6 +826,12 @@ function drawDome(now, sunA){
 }
 
 /* ---------- UI-Updates ---------- */
+function fmtRate(a){
+  if (!a) return '';
+  if (a.slow) return '\u25c6 quasi station\u00e4r';
+  if (a.rate >= 6) return (a.rate/60).toFixed(2).replace('.',',') + '\u00b0/s';   /* LEO: Grad pro Sekunde ist greifbarer */
+  return a.rate.toFixed(2).replace('.',',') + '\u00b0/min';
+}
 function stateWord(cls){
   return { sichtbar:'SICHTBAR', schatten:'Erdschatten', taghell:'Tageshimmel', unter:'unter Horizont' }[cls] || cls;
 }
@@ -801,6 +845,8 @@ function updateInfoCard(){
   $('icAz').textContent = SH.compass(e.o.az) + ' ' + Math.round(e.o.az) + '\u00b0';
   $('icDist').textContent = Math.round(e.o.range) + ' km';
   $('icH').textContent = Math.round(e.o.hKm) + ' km';
+  const a = arcs.find(k => k.catnr === e.s.catnr);
+  $('icRate').textContent = a ? fmtRate(a) : '';
 }
 function updateIssChip(nowMs){
   const e = snap.find(x => x.s.catnr === 25544);
