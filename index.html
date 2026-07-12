@@ -7,7 +7,7 @@
 <meta name="theme-color" content="#05080f">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>Satellitenhimmel v0.95</title>
+<title>Satellitenhimmel v0.96</title>
 <style>
 :root{
   --bg0:#05080f; --bg1:#0b1220; --bg2:#101a2e; --line:#1d2a42;
@@ -241,7 +241,7 @@ section.act{display:flex}
   <section id="view-map">
     <div id="mapWrap"><canvas id="worldMap"></canvas></div>
     <div id="mapInfo"><span class="tag" style="color:var(--iss);font-weight:700">ISS</span><span id="mapTxt" class="num">&ndash;</span></div>
-    <div id="mapLegend">Karte nach links schieben &rarr; rechts kommt die weitere Bahn &middot; Mittellinie = Uhrzeit dort, Nacht-Schattierung f&uuml;r genau diesen Moment &middot; &bdquo;&uuml;ber dir&ldquo;: gr&uuml;n = sichtbar, grau = Erdschatten, orange = Tageshimmel &middot; Doppeltipp = zur&uuml;ck zur ISS</div>
+    <div id="mapLegend"><b style="color:#ffcd5f">Helle Bahn</b> = ISS im Sonnenlicht, <b style="color:#7c90b0">graue</b> = im Erdschatten &middot; <b>sichtbar dort, wo die helle Bahn &uuml;ber Nachtgebiet l&auml;uft</b> &middot; Mittellinie = Uhrzeit dort &middot; Doppeltipp = zur&uuml;ck zur ISS</div>
   </section>
   <section id="view-list">
     <div id="listHead">
@@ -708,7 +708,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = SH;
 if (typeof document === 'undefined') return;
 
 /* ---------- Konfiguration ---------- */
-const APP_VERSION   = '0.95';
+const APP_VERSION   = '0.96';
 const OBS_DEFAULT   = { name: 'Wettenberg', lat: 50.61, lon: 8.65, altKm: 0.20 };
 const OBS_KEY       = 'satHimmel.obs.v1';
 const MIN_PASS_EL   = 10;      /* Grad */
@@ -1753,7 +1753,7 @@ function drawWorld(now){
         lonU += d;
       }
       prevLon = o.subLon;
-      pts.push([lonU, o.subLat, ms+dt]);
+      pts.push([lonU, o.subLat, ms+dt, o.lit ? 1 : 0]);
     }
     /* Ueberfluege ueber dem Standort: Punkte, an denen die Bodenspur dem Standort
        am naechsten kommt und innerhalb der Sichtzone (~20 Grad Zentralwinkel) liegt */
@@ -1772,15 +1772,6 @@ function drawWorld(now){
       }
     }
     if (inSeg && best) marks.push(best);
-    /* Sichtbarkeit am Standort zum Zeitpunkt der Marke:
-       dunkel genug (Sonne < -6) UND ISS sonnenbeleuchtet -> mit blossem Auge sichtbar */
-    for (const m of marks){
-      const tm = new Date(m.p[2]);
-      const sa = SH.sunAltAz(tm, obsGd).alt;
-      let lit = false;
-      try{ const pv = satellite.propagate(iss.rec, tm); lit = pv && pv.position ? SH.isSunlit(pv.position, tm) : false; }catch(e){}
-      m.cls = sa >= -6 ? 'taghell' : (lit ? 'sichtbar' : 'schatten');
-    }
     wmTrack = { t: ms, pts, lonU0: pts.length ? pts[0][0] : null, marks };
   }
   const lonU0 = wmTrack.lonU0 === null ? 0 : wmTrack.lonU0;
@@ -1847,39 +1838,40 @@ function drawWorld(now){
     wctx.fillStyle = 'rgba(1,2,8,.62)'; wctx.fill();
     wctx.strokeStyle = 'rgba(255,214,140,.30)'; wctx.lineWidth = 1.2; wctx.stroke();
   }
-  /* Spur: eine durchgehende Linie ueber die Endloskarte */
+  /* Spur: Farbe = Beleuchtungszustand der ISS.
+     Hell-golden = im Sonnenlicht, dunkelgrau = im Erdschatten.
+     Sichtbar ist sie genau dort, wo die HELLE Linie ueber NACHT-Gebiet laeuft. */
   if (wmTrack.pts.length){
-    wctx.strokeStyle = 'rgba(255,200,87,.75)'; wctx.lineWidth = 1.6*DPR/2;
-    wctx.beginPath();
-    for (let i=0;i<wmTrack.pts.length;i++){
-      const p = wmTrack.pts[i];
-      i ? wctx.lineTo(px(p[0]), py(p[1])) : wctx.moveTo(px(p[0]), py(p[1]));
+    wctx.lineCap = 'round';
+    for (let i=1;i<wmTrack.pts.length;i++){
+      const a = wmTrack.pts[i-1], b = wmTrack.pts[i];
+      const x1 = px(a[0]);
+      if (x1 < -30 && px(b[0]) < -30) continue;
+      if (x1 > W+30 && px(b[0]) > W+30) continue;
+      const lit = a[3] && b[3];
+      wctx.strokeStyle = lit ? 'rgba(255,205,95,.95)' : 'rgba(110,130,160,.38)';
+      wctx.lineWidth = (lit ? 2.0 : 1.4)*DPR/2*2;
+      wctx.beginPath(); wctx.moveTo(x1, py(a[1])); wctx.lineTo(px(b[0]), py(b[1])); wctx.stroke();
     }
-    wctx.stroke();
-    /* Zeitmarken: Punkt alle 10 min, Uhrzeit alle 30 min */
-    wctx.font = 500 + ' ' + 8.5*DPR + 'px -apple-system,sans-serif';
+    /* Taktpunkte alle 10 min, Farbe wie Zustand */
     wctx.textAlign = 'center';
     for (let i=10; i<wmTrack.pts.length; i+=10){
       const p = wmTrack.pts[i];
       const x = px(p[0]), y = py(p[1]);
       if (x < -20 || x > W+20) continue;
       wctx.beginPath(); wctx.arc(x, y, 1.6*DPR, 0, 7);
-      wctx.fillStyle = 'rgba(255,200,87,.85)'; wctx.fill();
+      wctx.fillStyle = p[3] ? 'rgba(255,205,95,.9)' : 'rgba(110,130,160,.5)';
+      wctx.fill();
     }
-    /* Ueberflug ueber dem Standort: Farbe = Sichtbarkeit zu diesem Zeitpunkt */
-    const MC = { sichtbar: ['#8df0be', 'sichtbar'], schatten: ['#8ea2c0', 'Erdschatten'], taghell: ['#e0b66e', 'Tageshimmel'] };
+    /* Ueberflug ueber dem Standort: Ring + Uhrzeit; ob sichtbar, zeigt die Linienfarbe */
     for (const m of (wmTrack.marks || [])){
       const x = px(m.p[0]), y = py(m.p[1]);
       if (x < -40 || x > W+40) continue;
-      const [col, word] = MC[m.cls] || MC.schatten;
       wctx.beginPath(); wctx.arc(x, y, 4.5*DPR/1.4, 0, 7);
-      if (m.cls === 'sichtbar'){ wctx.fillStyle = col; wctx.fill(); }
-      wctx.strokeStyle = col; wctx.lineWidth = 1.6*DPR; wctx.stroke();
-      wctx.fillStyle = col;
+      wctx.strokeStyle = '#e8eef9'; wctx.lineWidth = 1.5*DPR; wctx.stroke();
+      wctx.fillStyle = '#e8eef9';
       wctx.font = 700 + ' ' + 10*DPR + 'px -apple-system,sans-serif';
       wctx.fillText('\u00fcber dir ' + fmtHM.format(new Date(m.p[2])), x, y + 14*DPR);
-      wctx.font = 600 + ' ' + 8.5*DPR + 'px -apple-system,sans-serif';
-      wctx.fillText(word, x, y + 25*DPR);
       wctx.font = 500 + ' ' + 8.5*DPR + 'px -apple-system,sans-serif';
     }
   }
