@@ -7,7 +7,7 @@
 <meta name="theme-color" content="#05080f">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>Satellitenhimmel v0.7</title>
+<title>Satellitenhimmel v0.8</title>
 <style>
 :root{
   --bg0:#05080f; --bg1:#0b1220; --bg2:#101a2e; --line:#1d2a42;
@@ -143,6 +143,16 @@ section.act{display:flex}
 #peilBar{flex:none;margin:7px 14px 10px;display:flex;align-items:center;gap:10px;font-size:12px;color:var(--dim)}
 #peilBar .chip{flex:none}
 #peilPoint{min-width:96px}
+#kalSheet{position:fixed;left:0;right:0;bottom:0;z-index:61;transform:translateY(105%);transition:transform .25s;
+  background:var(--bg1);border-top:1px solid #2c3f63;border-radius:18px 18px 0 0;
+  padding:14px 16px calc(18px + env(safe-area-inset-bottom))}
+#kalSheet.show{transform:translateY(0)}
+#kalSheet h2{font-size:15px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;margin-bottom:2px}
+#kalSheet .sub{font-size:12.5px;color:var(--mut);margin-bottom:12px;line-height:1.45}
+#kalTargets{display:flex;flex-wrap:wrap;gap:8px}
+#kalTargets .btn{flex:1 1 44%;padding:12px 4px;font-size:14px}
+#kalTargets .btn small{display:block;font-weight:400;font-size:11px;color:var(--dim);margin-top:2px}
+#peil{touch-action:none}
 /* ---------- Toast ---------- */
 #toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom));transform:translateX(-50%) translateY(20px);
   max-width:86vw;background:var(--bg2);border:1px solid #2c3f63;color:var(--ink);padding:9px 16px;border-radius:12px;
@@ -252,6 +262,16 @@ section.act{display:flex}
   <div class="btnrow">
     <button class="btn gho" id="btnCancel" type="button">Abbrechen</button>
     <button class="btn pri" id="btnApply" type="button">&Uuml;bernehmen</button>
+  </div>
+</div>
+
+<div id="kalSheet" role="dialog" aria-label="Kalibrieren">
+  <h2>Azimut kalibrieren</h2>
+  <div class="sub">Fadenkreuz <b>vorher</b> auf das Ziel halten, dann Ziel antippen. Oder: im Sichtfenster horizontal ziehen, bis Himmel und Anzeige &uuml;bereinstimmen.</div>
+  <div id="kalTargets"></div>
+  <div class="btnrow" style="margin-top:10px">
+    <button class="btn gho" id="btnKalCancel" type="button">Schlie&szlig;en</button>
+    <button class="btn" id="btnKalReset" type="button">Zur&uuml;ck auf Kompass</button>
   </div>
 </div>
 
@@ -570,6 +590,35 @@ const SH = (function(){
     return { alt: la.elevation*R2D, az: ((la.azimuth*R2D)%360+360)%360,
              dist: p.dist, illum, waxing: dl < 180 };
   }
+  /* Hellste Sterne + Polarstern, RA/Dec J2000 in Grad (Praezession bis 2026
+     bleibt unkorrigiert: < 0,4 Grad - unterhalb der Kompassaufloesung).
+     Nur Deklination > -30: alles andere steht von Mitteleuropa aus nie brauchbar hoch. */
+  const STARS = [
+    ['Polarstern', 37.955,  89.264, 2.0],
+    ['Sirius',    101.287, -16.716, -1.5],
+    ['Arktur',    213.915,  19.182,  0.0],
+    ['Wega',      279.234,  38.784,  0.0],
+    ['Capella',    79.172,  45.998,  0.1],
+    ['Rigel',      78.634,  -8.202,  0.1],
+    ['Prokyon',   114.826,   5.225,  0.3],
+    ['Beteigeuze', 88.793,   7.407,  0.4],
+    ['Atair',     297.696,   8.868,  0.8],
+    ['Aldebaran',  68.980,  16.509,  0.9],
+    ['Spica',     201.298, -11.161,  1.0],
+    ['Antares',   247.352, -26.432,  1.1],
+    ['Pollux',    116.329,  28.026,  1.1],
+    ['Deneb',     310.358,  45.280,  1.3],
+    ['Regulus',   152.093,  11.967,  1.4]
+  ];
+  function starAltAz(star, date, obsGd){
+    const ra = star[1]*D2R, dec = star[2]*D2R, big = 1e9;
+    const pos = { x: big*Math.cos(dec)*Math.cos(ra), y: big*Math.cos(dec)*Math.sin(ra), z: big*Math.sin(dec) };
+    const la = satellite.ecfToLookAngles(obsGd, satellite.eciToEcf(pos, satellite.gstime(date)));
+    return { name: star[0], mag: star[3], alt: la.elevation*R2D, az: ((la.azimuth*R2D)%360+360)%360 };
+  }
+  function starsUp(date, obsGd, minAlt){
+    return STARS.map(st => starAltAz(st, date, obsGd)).filter(x => x.alt > (minAlt === undefined ? 10 : minAlt));
+  }
   /* Geraete-Euler (W3C deviceorientation: intrinsisch Z-X'-Y'') -> Peilrichtung
      der Rueckkamera (-z-Achse) im Erdsystem (X=Ost, Y=Nord, Z=oben).
      azRaw hat auf iOS beliebigen Nullpunkt (alpha) - Offset kommt aus Kompass
@@ -629,7 +678,7 @@ const SH = (function(){
     return win;
   }
   return { jdFromDate, compass, sunRaDec, sunAltAz, isSunlit, makeSats, observe, findPasses,
-           apparentMag, nightWindows, obsEci, moonAltAz, angSep, eulerToPointing, D2R, R2D };
+           apparentMag, nightWindows, obsEci, moonAltAz, angSep, eulerToPointing, starAltAz, starsUp, D2R, R2D };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = SH;
 </script>
@@ -643,7 +692,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = SH;
 if (typeof document === 'undefined') return;
 
 /* ---------- Konfiguration ---------- */
-const APP_VERSION   = '0.7';
+const APP_VERSION   = '0.8';
 const OBS_DEFAULT   = { name: 'Wettenberg', lat: 50.61, lon: 8.65, altKm: 0.20 };
 const OBS_KEY       = 'satHimmel.obs.v1';
 const MIN_PASS_EL   = 10;      /* Grad */
@@ -1367,25 +1416,86 @@ function onOrient(e){
     peil.el = peil.el + (p.el - peil.el) * 0.25;
   }
 }
-/* Kalibrieren: Kreuz auf Sonne oder Mond, dann Offset exakt setzen */
-function kalTarget(){
-  const su = SH.sunAltAz(new Date(), obsGd);
-  if (su.alt > -1) return { name: 'Sonne', az: su.az, el: su.alt };
-  const mo = SH.moonAltAz(new Date(), obsGd);
-  if (mo.alt > -1 && mo.illum > 0.05) return { name: 'Mond', az: mo.az, el: mo.alt };
-  return null;
+/* Kalibrierziele: alles, dessen Position die App exakt kennt und das man sehen kann */
+function kalTargets(){
+  const now = new Date(), out = [];
+  const su = SH.sunAltAz(now, obsGd);
+  if (su.alt > -1) out.push({ name: 'Sonne', hint: SH.compass(su.az) + ' ' + Math.round(su.alt) + '\u00b0', az: su.az });
+  const mo = SH.moonAltAz(now, obsGd);
+  if (mo.alt > -1 && mo.illum > 0.05) out.push({ name: 'Mond', hint: SH.compass(mo.az) + ' ' + Math.round(mo.alt) + '\u00b0 \u00b7 ' + Math.round(mo.illum*100) + ' %', az: mo.az });
+  /* Sterne nur, wenn man sie auch sieht (Sonne unter -6) */
+  if (su.alt < -6){
+    const stars = SH.starsUp(now, obsGd, 15).sort((a,b) => (a.name === 'Polarstern' ? -1 : b.name === 'Polarstern' ? 1 : a.mag - b.mag));
+    for (const st of stars.slice(0, 4))
+      out.push({ name: st.name, hint: SH.compass(st.az) + ' ' + Math.round(st.alt) + '\u00b0', az: st.az });
+  }
+  const sel = snap.find(e => e.s.catnr === selected);
+  if (sel && sel.o.el > 5 && sel.o.cls === 'sichtbar')
+    out.push({ name: shortName(sel.s.name), hint: 'bewegt \u00b7 ' + SH.compass(sel.o.az) + ' ' + Math.round(sel.o.el) + '\u00b0', live: sel.s.catnr });
+  return out;
 }
-$('btnKal').addEventListener('click', () => {
-  const t = kalTarget();
-  if (!t){ toast('Weder Sonne noch Mond \u00fcber dem Horizont \u2013 sp\u00e4ter kalibrieren'); return; }
+function applyKal(azTrue, label){
   if (!peil.evt){ toast('Noch keine Sensordaten'); return; }
   const p = SH.eulerToPointing(peil.evt.alpha, peil.evt.beta, peil.evt.gamma);
-  peil.offset = ((t.az - p.azRaw) % 360 + 360) % 360;
+  peil.offset = ((azTrue - p.azRaw) % 360 + 360) % 360;
   peil.offsetSrc = 'kal';
-  peil.az = t.az;   /* Glaettung sofort nachziehen */
-  $('peilKalTxt').textContent = 'kalibriert auf ' + t.name;
-  toast('Kalibriert auf ' + t.name + ' \u2013 Azimut sitzt jetzt');
+  peil.az = azTrue;
+  $('peilKalTxt').textContent = 'kalibriert: ' + label;
+  toast('Kalibriert auf ' + label);
+}
+$('btnKal').addEventListener('click', () => {
+  const host = $('kalTargets'); host.innerHTML = '';
+  const ts2 = kalTargets();
+  if (!ts2.length){
+    const p = document.createElement('p');
+    p.style.cssText = 'font-size:13px;color:var(--mut)';
+    p.textContent = 'Gerade kein Ziel verf\u00fcgbar (Sonne/Mond unter Horizont, D\u00e4mmerung zu hell f\u00fcr Sterne). Manuell ziehen geht immer.';
+    host.appendChild(p);
+  }
+  for (const t of ts2){
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'btn';
+    b.innerHTML = t.name + '<small>' + t.hint + '</small>';
+    b.addEventListener('click', () => {
+      let az = t.az;
+      if (t.live !== undefined){   /* bewegtes Ziel: Position im Tipp-Moment frisch rechnen */
+        const sat = sats.find(x => x.catnr === t.live);
+        const o = sat && SH.observe(sat, new Date(), obsGd, -90);
+        if (!o){ toast('Objekt nicht berechenbar'); return; }
+        az = o.az;
+      }
+      applyKal(az, t.name);
+      $('kalSheet').classList.remove('show');
+    });
+    host.appendChild(b);
+  }
+  $('kalSheet').classList.add('show');
 });
+$('btnKalCancel').addEventListener('click', () => $('kalSheet').classList.remove('show'));
+$('btnKalReset').addEventListener('click', () => {
+  peil.offsetSrc = 'auto'; peil.offset = null;
+  $('peilKalTxt').textContent = 'Kompass (\u00b15\u201310\u00b0)';
+  $('kalSheet').classList.remove('show');
+  toast('Zur\u00fcck auf Kompass-Offset');
+});
+/* Manuelles Nachziehen: horizontaler Zug ueber das Sichtfenster verschiebt den Azimut.
+   iOS-Regeln: Drag-Flag frueh setzen, pointermove/up dokumentweit. */
+let peilDrag = null;
+$('peil').addEventListener('pointerdown', e => {
+  peilDrag = { x: e.clientX, moved: false, off0: peil.offset === null ? 0 : peil.offset };
+});
+document.addEventListener('pointermove', e => {
+  if (!peilDrag || peil.az === null) return;
+  const dx2 = e.clientX - peilDrag.x;
+  if (Math.abs(dx2) > 6) peilDrag.moved = true;
+  if (!peilDrag.moved) return;
+  const r = $('peil').getBoundingClientRect();
+  const degPerPx = 54 / Math.max(r.width, 40) / Math.cos(Math.min(Math.abs(peil.el || 0), 75)*SH.D2R);
+  peil.offset = ((peilDrag.off0 - dx2*degPerPx) % 360 + 360) % 360;
+  peil.offsetSrc = 'kal';
+  $('peilKalTxt').textContent = 'manuell justiert';
+});
+document.addEventListener('pointerup', () => { peilDrag = null; });
 
 /* Zeichnen: Fenster +-27 Grad horizontal um die Peilrichtung */
 const peilCv = $('peil');
@@ -1446,6 +1556,18 @@ function drawPeil(now){
     const x = cx + dx(mo.az), y = cy + dy(mo.alt);
     pctx.beginPath(); pctx.arc(x, y, 5*DPR, 0, 7); pctx.fillStyle = 'rgba(226,232,244,.85)'; pctx.fill();
     pctx.fillStyle = '#aab6cc'; pctx.fillText('Mond', x, y - 11*DPR);
+  }
+  /* Sterne (nur bei dunklem Himmel sichtbar -> nur dann zeichnen) */
+  if (SH.sunAltAz(now, obsGd).alt < -6){
+    for (const st of SH.starsUp(now, obsGd, -5)){
+      const x = cx + dx(st.az), y = cy + dy(st.alt);
+      if (x < -20 || x > W+20 || y < -20 || y > H+20) continue;
+      const r2 = Math.max(1.4, 3.4 - 0.8*st.mag)*DPR;
+      pctx.beginPath(); pctx.arc(x, y, r2, 0, 7);
+      pctx.fillStyle = 'rgba(235,240,250,.9)'; pctx.fill();
+      pctx.fillStyle = 'rgba(170,185,210,.85)';
+      pctx.fillText(st.name, x, y - (r2 + 8*DPR));
+    }
   }
   /* Satelliten aus snap */
   for (const {s,o} of snap){
