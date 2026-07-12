@@ -7,7 +7,7 @@
 <meta name="theme-color" content="#05080f">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>Satellitenhimmel v1.44</title>
+<title>Satellitenhimmel v1.45</title>
 <style>
 :root{
   --bg0:#05080f; --bg1:#0b1220; --bg2:#101a2e; --line:#1d2a42;
@@ -715,7 +715,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = SH;
 if (typeof document === 'undefined') return;
 
 /* ---------- Konfiguration ---------- */
-const APP_VERSION   = '1.44';
+const APP_VERSION   = '1.45';
 const OBS_DEFAULT   = { name: 'Wettenberg', lat: 50.61, lon: 8.65, altKm: 0.20 };
 const OBS_KEY       = 'satHimmel.obs.v1';
 const MIN_PASS_EL   = 10;      /* Grad */
@@ -1732,6 +1732,7 @@ const wctx = wm.getContext ? wm.getContext('2d') : null;
 let wmTrack = { t: 0, pts: [], lonU0: null };     /* Spur in ENTROLLTER Laenge (kein Datumsgrenzen-Sprung) */
 let mapPan = null, mapDrag = null, mapLastTap = 0; /* Pan der Endloskarte, entrollte Laenge am linken Rand */
 const TRACK_H = 6;                                 /* Stunden Spur voraus */
+const TRACK_PAST = 6;                              /* Stunden Spur zurueck (verpasste Ueberfluege) */
 function sizeMap(){
   const r = wm.parentElement.getBoundingClientRect();
   if (r.width < 10) return;
@@ -1748,19 +1749,25 @@ function drawWorld(now){
   if (iss && Math.abs(ms - wmTrack.t) > 30000){
     const pts = [];
     let prevLon = null, lonU = null;
-    for (let dt=0; dt<=TRACK_H*3600000; dt+=60000){
+    for (let dt=-TRACK_PAST*3600000; dt<=TRACK_H*3600000; dt+=60000){
       const o = SH.observe(iss, new Date(ms+dt), obsGd, -90);
       if (!o) continue;
-      if (lonU === null){
-        lonU = o.subLon;
-        if (wmTrack.lonU0 !== null) lonU += 360*Math.round((wmTrack.lonU0 - lonU)/360);   /* Rahmen stetig halten */
-      } else {
+      if (lonU === null) lonU = o.subLon;
+      else {
         let d = o.subLon - prevLon;
         if (d < -180) d += 360; else if (d > 180) d -= 360;
         lonU += d;
       }
       prevLon = o.subLon;
       pts.push([lonU, o.subLat, ms+dt, o.lit ? 1 : 0]);
+    }
+    /* Anker = Position JETZT; Rahmen ueber Neuberechnungen stetig halten */
+    let lonUNow = pts.length ? pts[0][0] : null;
+    for (const p of pts) if (p[2] >= ms){ lonUNow = p[0]; break; }
+    if (wmTrack.lonU0 !== null && lonUNow !== null){
+      const shift = 360*Math.round((wmTrack.lonU0 - lonUNow)/360);
+      if (shift !== 0) for (const p of pts) p[0] += shift;
+      lonUNow += shift;
     }
     /* Ueberfluege ueber dem Standort: Punkte, an denen die Bodenspur dem Standort
        am naechsten kommt und innerhalb der Sichtzone (~20 Grad Zentralwinkel) liegt */
@@ -1796,7 +1803,7 @@ function drawWorld(now){
     const cross = [];
     const findCross = (thr, downName, upName) => {
       let prev = null;
-      for (let t = ms - 3600000; t <= ms + (TRACK_H+2)*3600000; t += 300000){
+      for (let t = ms - (TRACK_PAST+1)*3600000; t <= ms + (TRACK_H+2)*3600000; t += 300000){
         const below = SH.sunAltAz(new Date(t), obsGd).alt < thr;
         if (prev !== null && below !== prev){
           let a = t - 300000, b = t;
@@ -1811,7 +1818,7 @@ function drawWorld(now){
     };
     findCross(-6, 'dunkel', 'hell');
     findCross(0, 'su', 'sa');
-    wmTrack = { t: ms, pts, lonU0: pts.length ? pts[0][0] : null, marks, cross };
+    wmTrack = { t: ms, pts, lonU0: lonUNow, marks, cross };
   }
   const lonU0 = wmTrack.lonU0 === null ? 0 : wmTrack.lonU0;
   if (mapPan === null) mapPan = lonU0 - 180;   /* Startansicht: ISS auf der Mittellinie ("jetzt") */
@@ -1998,8 +2005,9 @@ function drawWorld(now){
       const x1 = px(a[0]);
       if (x1 < -30 && px(b[0]) < -30) continue;
       if (x1 > W+30 && px(b[0]) > W+30) continue;
-      const lit = a[3] && b[3];
-      wctx.strokeStyle = lit ? 'rgba(255,205,95,.95)' : 'rgba(110,130,160,.38)';
+      const lit = a[3] && b[3], past = b[2] < ms;
+      wctx.strokeStyle = lit ? (past ? 'rgba(255,205,95,.42)' : 'rgba(255,205,95,.95)')
+                             : (past ? 'rgba(110,130,160,.18)' : 'rgba(110,130,160,.38)');
       wctx.lineWidth = (lit ? 2.0 : 1.4)*DPR/2*2;
       wctx.beginPath(); wctx.moveTo(x1, py(a[1])); wctx.lineTo(px(b[0]), py(b[1])); wctx.stroke();
     }
@@ -2010,7 +2018,8 @@ function drawWorld(now){
       const x = px(p[0]), y = py(p[1]);
       if (x < -20 || x > W+20) continue;
       wctx.beginPath(); wctx.arc(x, y, 1.6*DPR, 0, 7);
-      wctx.fillStyle = p[3] ? 'rgba(255,205,95,.9)' : 'rgba(110,130,160,.5)';
+      wctx.fillStyle = p[3] ? (p[2] < ms ? 'rgba(255,205,95,.4)' : 'rgba(255,205,95,.9)')
+                             : (p[2] < ms ? 'rgba(110,130,160,.22)' : 'rgba(110,130,160,.5)');
       wctx.fill();
     }
     /* Ueberflug ueber dem Standort: Ring + Uhrzeit; ob sichtbar, zeigt die Linienfarbe */
@@ -2369,9 +2378,9 @@ document.addEventListener('pointermove', e => {
   if (!mapDrag.moved) return;
   const r = wm.getBoundingClientRect();
   const degPerPx = 360 / Math.max(r.width, 40);
-  const lo = (wmTrack.lonU0 === null ? 0 : wmTrack.lonU0);
+  const lo = wmTrack.pts.length ? wmTrack.pts[0][0] : (wmTrack.lonU0 === null ? 0 : wmTrack.lonU0);
   const hi = wmTrack.pts.length ? wmTrack.pts[wmTrack.pts.length-1][0] : lo + 360;
-  mapPan = Math.max(lo - 180, Math.min(hi - 20, mapDrag.pan0 - dx3*degPerPx));   /* links: jetzt, keine Vergangenheit */
+  mapPan = Math.max(lo - 180, Math.min(hi - 20, mapDrag.pan0 - dx3*degPerPx));   /* links: bis -6 h Vergangenheit */
   lastMap = 0;
 });
 document.addEventListener('pointerup', () => {
