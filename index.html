@@ -7,7 +7,7 @@
 <meta name="theme-color" content="#05080f">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>Satellitenhimmel v0.96</title>
+<title>Satellitenhimmel v0.97</title>
 <style>
 :root{
   --bg0:#05080f; --bg1:#0b1220; --bg2:#101a2e; --line:#1d2a42;
@@ -708,7 +708,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = SH;
 if (typeof document === 'undefined') return;
 
 /* ---------- Konfiguration ---------- */
-const APP_VERSION   = '0.96';
+const APP_VERSION   = '0.97';
 const OBS_DEFAULT   = { name: 'Wettenberg', lat: 50.61, lon: 8.65, altKm: 0.20 };
 const OBS_KEY       = 'satHimmel.obs.v1';
 const MIN_PASS_EL   = 10;      /* Grad */
@@ -1778,17 +1778,6 @@ function drawWorld(now){
   if (mapPan === null) mapPan = lonU0 - 180;   /* Startansicht: ISS auf der Mittellinie ("jetzt") */
   const px = lu => (lu - mapPan)/360*W;
   const py = lat => (90-lat)/180*H;
-  wctx.clearRect(0,0,W,H);
-  wctx.fillStyle = '#060d1a'; wctx.fillRect(0,0,W,H);
-  /* Kacheln: Kachel K deckt die Laengen [K-180, K+180] ab */
-  const k0 = Math.floor((mapPan+180)/360)*360;
-  const tiles = [k0-360, k0, k0+360, k0+720].filter(K => K+180 > mapPan && K-180 < mapPan+360);
-  /* Gradnetz (entrollt) */
-  wctx.strokeStyle = '#13203a'; wctx.lineWidth = 1;
-  for (let lu = Math.ceil(mapPan/30)*30; lu <= mapPan+360; lu += 30){
-    wctx.beginPath(); wctx.moveTo(px(lu),0); wctx.lineTo(px(lu),H); wctx.stroke();
-  }
-  for (let lat=-60; lat<=60; lat+=30){ wctx.beginPath(); wctx.moveTo(0,py(lat)); wctx.lineTo(W,py(lat)); wctx.stroke(); }
   /* Zeit an der Mittellinie: Moment, in dem die ISS die Bildmitte erreicht.
      Nachtseite wird fuer DIESEN Zeitpunkt gerechnet - beim Scrollen wandert
      die Nacht also korrekt nach Westen. */
@@ -1808,6 +1797,26 @@ function drawWorld(now){
     }
   }
   const tCd = new Date(tC);
+  /* Gesamtstimmung: Sonnenhoehe am STANDORT zum Mittellinien-Zeitpunkt.
+     Tag -> ganze Karte hell, Nacht -> ganze Karte dunkel; Daemmerung dazwischen. */
+  const saObs = SH.sunAltAz(tCd, obsGd).alt;
+  const amb = Math.max(0, Math.min(1, (saObs + 12) / 18));
+  const mix = (a, b) => 'rgb(' + Math.round(a[0]+(b[0]-a[0])*amb) + ',' + Math.round(a[1]+(b[1]-a[1])*amb) + ',' + Math.round(a[2]+(b[2]-a[2])*amb) + ')';
+  const COL_OCEAN = mix([6,13,26],   [30,58,95]);
+  const COL_LAND  = mix([49,72,111], [104,136,184]);
+  const COL_EDGE  = mix([90,118,163],[156,184,224]);
+  const COL_GRAT  = mix([19,32,58],  [46,70,108]);
+  wctx.clearRect(0,0,W,H);
+  wctx.fillStyle = COL_OCEAN; wctx.fillRect(0,0,W,H);
+  /* Kacheln: Kachel K deckt die Laengen [K-180, K+180] ab */
+  const k0 = Math.floor((mapPan+180)/360)*360;
+  const tiles = [k0-360, k0, k0+360, k0+720].filter(K => K+180 > mapPan && K-180 < mapPan+360);
+  /* Gradnetz (entrollt) */
+  wctx.strokeStyle = COL_GRAT; wctx.lineWidth = 1;
+  for (let lu = Math.ceil(mapPan/30)*30; lu <= mapPan+360; lu += 30){
+    wctx.beginPath(); wctx.moveTo(px(lu),0); wctx.lineTo(px(lu),H); wctx.stroke();
+  }
+  for (let lat=-60; lat<=60; lat+=30){ wctx.beginPath(); wctx.moveTo(0,py(lat)); wctx.lineTo(W,py(lat)); wctx.stroke(); }
   /* Land + Nachtseite je Kachel (Nacht: Stand tC) */
   const jd = SH.jdFromDate(tCd);
   const sd = SH.sunRaDec(jd);
@@ -1815,7 +1824,7 @@ function drawWorld(now){
   const sunLon = ((sd.ra - gmst) * SH.R2D % 360 + 540) % 360 - 180;
   const sunLat = sd.dec * SH.R2D;
   for (const K of tiles){
-    wctx.fillStyle = '#31486f'; wctx.strokeStyle = '#5a76a3'; wctx.lineWidth = 1.2;
+    wctx.fillStyle = COL_LAND; wctx.strokeStyle = COL_EDGE; wctx.lineWidth = 1.2;
     for (const poly of WORLD){
       wctx.beginPath();
       for (let i=0;i<poly.length;i++){
@@ -1923,6 +1932,11 @@ function drawWorld(now){
   wctx.fillStyle = '#e8eef9';
   wctx.font = 700 + ' ' + 11*DPR + 'px -apple-system,sans-serif';
   wctx.fillText('ISS hier: ' + dayLabel(tC) + ' ' + fmtHM.format(tCd) + ' (' + rel + ')', W/2, 13*DPR);
+  const zust = saObs >= 0 ? ['\u2600 Tag bei dir', '#ffd98f'] : saObs >= -6 ? ['D\u00e4mmerung bei dir', '#c8b078'] :
+               saObs >= -12 ? ['dunkle D\u00e4mmerung bei dir', '#8ea2c0'] : ['\u263e Nacht bei dir', '#aab9d6'];
+  wctx.fillStyle = zust[1];
+  wctx.font = 600 + ' ' + 9*DPR + 'px -apple-system,sans-serif';
+  wctx.fillText(zust[0], W/2, 25*DPR);
 }
 /* Pan: Welt nach links wegschieben, rechts kommt die Fortsetzung mit der kuenftigen Bahn.
    Doppeltipp = zurueck zur ISS. */
