@@ -7,7 +7,7 @@
 <meta name="theme-color" content="#05080f">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>Satellitenhimmel v0.84</title>
+<title>Satellitenhimmel v0.85</title>
 <style>
 :root{
   --bg0:#05080f; --bg1:#0b1220; --bg2:#101a2e; --line:#1d2a42;
@@ -196,7 +196,7 @@ section.act{display:flex}
       </div>
     </div>
     <div id="legend">
-      Karte f&uuml;r Blick nach oben: N oben, <b>O links</b> &nbsp;&middot;&nbsp;
+      <span id="legendMode">Karte f&uuml;r Blick nach oben: N oben, <b>O links</b></span> &nbsp;&middot;&nbsp;
       <i><span style="color:var(--vis)">&#9679;</span> sichtbar</i> &nbsp;
       <i><span style="color:var(--sh)">&#9675;</span> Erdschatten</i> &nbsp;
       <i><span style="color:var(--day)">&#9679;</span> Tageshimmel</i> &nbsp;&middot;&nbsp; Linie = Bahn der n&auml;chsten 6 min &middot; &#9670; quasi station&auml;r &middot; Tippen w&auml;hlt Objekt
@@ -694,7 +694,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = SH;
 if (typeof document === 'undefined') return;
 
 /* ---------- Konfiguration ---------- */
-const APP_VERSION   = '0.84';
+const APP_VERSION   = '0.85';
 const OBS_DEFAULT   = { name: 'Wettenberg', lat: 50.61, lon: 8.65, altKm: 0.20 };
 const OBS_KEY       = 'satHimmel.obs.v1';
 const MIN_PASS_EL   = 10;      /* Grad */
@@ -875,10 +875,11 @@ function sizeDome(){
   dome.style.width = domeCss + 'px'; dome.style.height = domeCss + 'px';
   dome.width = Math.round(domeCss * DPR); dome.height = Math.round(domeCss * DPR);
 }
-let domeRot = 0;   /* aktuelle Kartendrehung in Grad (0 = N oben) */
+let domeRot = 0;   /* Kartendrehung in Grad (0 = N oben) */
+let domeM = -1;    /* -1 = Blick-nach-oben-Karte (O links), +1 = Landkarte (O rechts, Kompassmodus) */
 function proj(az, el, R, cx, cy){
   const r = (90 - Math.max(el, 0)) / 90 * R, a = (az - domeRot) * SH.D2R;
-  return [cx - r*Math.sin(a), cy - r*Math.cos(a)];   /* Blick-nach-oben-Karte, O links von N */
+  return [cx + domeM*r*Math.sin(a), cy - r*Math.cos(a)];
 }
 function shortName(n){
   return String(n).replace(/\s*\(.*?\)\s*/g, '').replace(/ R\/B$/, ' R/B').slice(0, 14);
@@ -892,6 +893,7 @@ function drawDome(now, sunA){
   if (!ctx) return;
   const W = dome.width, H = dome.height, cx = W/2, cy = H/2, R = W/2 - 16*DPR;
   domeRot = (domeCompass && peil.heading !== null) ? peil.heading : 0;
+  domeM = domeCompass ? 1 : -1;   /* Kompass = Landkarte in der Hand, sonst UEber-Kopf-Karte */
   ctx.clearRect(0,0,W,H);
   /* Himmelston nach Daemmerungsphase */
   const g = ctx.createRadialGradient(cx,cy,0,cx,cy,R);
@@ -907,15 +909,15 @@ function drawDome(now, sunA){
   }
   const rr0 = -domeRot*SH.D2R;
   ctx.beginPath();
-  ctx.moveTo(cx - R*Math.sin(rr0), cy - R*Math.cos(rr0)); ctx.lineTo(cx + R*Math.sin(rr0), cy + R*Math.cos(rr0));
-  ctx.moveTo(cx - R*Math.cos(rr0), cy + R*Math.sin(rr0)); ctx.lineTo(cx + R*Math.cos(rr0), cy - R*Math.sin(rr0));
+  ctx.moveTo(cx + domeM*R*Math.sin(rr0), cy - R*Math.cos(rr0)); ctx.lineTo(cx - domeM*R*Math.sin(rr0), cy + R*Math.cos(rr0));
+  ctx.moveTo(cx + domeM*R*Math.cos(rr0), cy + R*Math.sin(rr0)); ctx.lineTo(cx - domeM*R*Math.cos(rr0), cy - R*Math.sin(rr0));
   ctx.strokeStyle = '#14213a'; ctx.stroke();
   /* Himmelsrichtungen */
   ctx.fillStyle = '#8ea2c0'; ctx.font = 700 + ' ' + 12*DPR + 'px -apple-system,sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   for (const [dir, lb] of [[0,'N'],[90,'O'],[180,'S'],[270,'W']]){
     const a = (dir - domeRot)*SH.D2R, rl = R - 9*DPR;
-    ctx.fillText(lb, cx - rl*Math.sin(a), cy - rl*Math.cos(a));
+    ctx.fillText(lb, cx + domeM*rl*Math.sin(a), cy - rl*Math.cos(a));
   }
   /* Sonne */
   if (sunA > -1){
@@ -1040,8 +1042,8 @@ function drawDome(now, sunA){
       const a = (nx.azRise - domeRot) * SH.D2R;
       ctx.strokeStyle = '#ffc857'; ctx.lineWidth = 2.5*DPR;
       ctx.beginPath();
-      ctx.moveTo(cx - (R-6*DPR)*Math.sin(a), cy - (R-6*DPR)*Math.cos(a));
-      ctx.lineTo(cx - (R+5*DPR)*Math.sin(a), cy - (R+5*DPR)*Math.cos(a));
+      ctx.moveTo(cx + domeM*(R-6*DPR)*Math.sin(a), cy - (R-6*DPR)*Math.cos(a));
+      ctx.lineTo(cx + domeM*(R+5*DPR)*Math.sin(a), cy - (R+5*DPR)*Math.cos(a));
       ctx.stroke();
     }
   }
@@ -1416,6 +1418,9 @@ $('domeRotBtn').addEventListener('click', () => {
     $('domeRotBtn').textContent = 'N oben';
     $('domeRotBtn').classList.remove('act');
   }
+  $('legendMode').innerHTML = domeCompass
+    ? 'Kompassmodus: Handy flach halten \u2013 Blickrichtung oben, <b>O rechts</b> (wie Landkarte)'
+    : 'Karte f\u00fcr Blick nach oben: N oben, <b>O links</b>';
 });
 function onOrient(e){
   if (e.alpha === null && e.webkitCompassHeading === undefined) return;
@@ -1436,10 +1441,14 @@ function onOrient(e){
     peil.az = ((peil.az + (((az - peil.az + 540) % 360) - 180) * 0.25) % 360 + 360) % 360;
     peil.el = peil.el + (p.el - peil.el) * 0.25;
   }
-  /* Blickrichtung der Geraete-Oberkante (fuer den Kompassmodus der Kuppel) */
-  const hd = ((p.yawY + (peil.offset === null ? 0 : peil.offset)) % 360 + 360) % 360;
-  peil.heading = peil.heading === null ? hd
-    : ((peil.heading + (((hd - peil.heading + 540) % 360) - 180) * 0.25) % 360 + 360) % 360;
+  /* Blickrichtung der Geraete-Oberkante (Kompassmodus der Kuppel).
+     Nur bei flacher Lage nachfuehren - steht das Handy aufrecht, ist die
+     Oberkanten-Projektion degeneriert und wuerde springen. */
+  if (p.yFlat){
+    const hd = ((p.yawY + (peil.offset === null ? 0 : peil.offset)) % 360 + 360) % 360;
+    peil.heading = peil.heading === null ? hd
+      : ((peil.heading + (((hd - peil.heading + 540) % 360) - 180) * 0.25) % 360 + 360) % 360;
+  }
 }
 /* Kalibrierziele: alles, dessen Position die App exakt kennt und das man sehen kann */
 function kalTargets(){
