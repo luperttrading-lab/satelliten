@@ -7,7 +7,7 @@
 <meta name="theme-color" content="#05080f">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>Satellitenhimmel v0.81</title>
+<title>Satellitenhimmel v0.82</title>
 <style>
 :root{
   --bg0:#05080f; --bg1:#0b1220; --bg2:#101a2e; --line:#1d2a42;
@@ -692,7 +692,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = SH;
 if (typeof document === 'undefined') return;
 
 /* ---------- Konfiguration ---------- */
-const APP_VERSION   = '0.81';
+const APP_VERSION   = '0.82';
 const OBS_DEFAULT   = { name: 'Wettenberg', lat: 50.61, lon: 8.65, altKm: 0.20 };
 const OBS_KEY       = 'satHimmel.obs.v1';
 const MIN_PASS_EL   = 10;      /* Grad */
@@ -1544,6 +1544,12 @@ function drawPeil(now){
       pctx.fillText(SH.compass(a), x, Math.min(Math.max(y0 + 14*DPR, 12*DPR), H - 12*DPR));
     }
   }
+  /* Unter dem Horizont: Flaeche dezent fuellen ("hinter der Erde") */
+  const yHor = cy + dy(0);
+  if (yHor < H){
+    pctx.fillStyle = 'rgba(16,24,40,.45)';
+    pctx.fillRect(0, Math.max(yHor, 0), W, H - Math.max(yHor, 0));
+  }
   /* Sonne + Mond */
   const su = SH.sunAltAz(now, obsGd);
   if (Math.abs(dx(su.az)) < W && Math.abs(dy(su.alt)) < H){
@@ -1571,13 +1577,22 @@ function drawPeil(now){
   }
   /* Satelliten aus snap */
   for (const {s,o} of snap){
-    if (o.el < -5) continue;
+    const isIss = s.catnr === 25544, isSel = s.catnr === selected;
+    if (o.el < -5 && !isIss && !isSel) continue;   /* ISS + Auswahl auch unter dem Horizont */
     const x = cx + dx(o.az), y = cy + dy(o.el);
     if (x < -20 || x > W+20 || y < -20 || y > H+20) continue;
-    const isIss = s.catnr === 25544, isSel = s.catnr === selected;
     const m = s.mag === null ? 5 : s.mag;
     let rad = Math.max(2.1, Math.min(4.6, 4.6 - 0.42*m))*DPR;
     if (isIss) rad = 5.5*DPR;
+    if (o.el <= 0 && (isIss || isSel)){
+      /* unter dem Horizont: hohler Marker, kein Glow */
+      pctx.beginPath(); pctx.arc(x, y, rad, 0, 7);
+      pctx.strokeStyle = isIss ? 'rgba(255,200,87,.75)' : 'rgba(203,213,229,.7)';
+      pctx.lineWidth = 1.6*DPR; pctx.setLineDash([3*DPR, 3*DPR]); pctx.stroke(); pctx.setLineDash([]);
+      pctx.fillStyle = pctx.strokeStyle;
+      pctx.fillText((isIss ? 'ISS' : shortName(s.name)) + ' \u00b7 ' + Math.round(o.el) + '\u00b0 unter Horizont', x, y - (rad + 9*DPR));
+      continue;
+    }
     pctx.beginPath(); pctx.arc(x, y, rad, 0, 7);
     pctx.fillStyle = o.cls === 'sichtbar' || isIss ? (isIss ? '#ffc857' : '#9ff2c4')
                     : o.cls === 'taghell' ? '#e0b66e' : 'rgba(124,144,175,.5)';
