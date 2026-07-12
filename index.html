@@ -7,7 +7,7 @@
 <meta name="theme-color" content="#05080f">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>Satellitenhimmel v0.21</title>
+<title>Satellitenhimmel v0.3</title>
 <style>
 :root{
   --bg0:#05080f; --bg1:#0b1220; --bg2:#101a2e; --line:#1d2a42;
@@ -31,7 +31,8 @@ body{
 #hdr h1{font-size:17px; font-weight:700; letter-spacing:.10em; text-transform:uppercase}
 #hdr .ver{font-size:11px; color:var(--dim); font-family:ui-monospace,Menlo,monospace}
 #hdr .loc{margin-left:auto; font-size:12px; color:var(--mut); border:1px solid var(--line); background:var(--bg1);
-  border-radius:999px; padding:2px 10px; line-height:1.4; white-space:nowrap}
+  border-radius:999px; padding:2px 10px; line-height:1.4; white-space:nowrap;
+  max-width:46%; overflow:hidden; text-overflow:ellipsis; flex:0 1 auto}
 #hdr .loc:active{background:var(--bg2)}
 /* ---------- Ort-Sheet ---------- */
 #sheetBg{position:fixed;inset:0;background:rgba(3,6,12,.72);z-index:60;display:none}
@@ -165,7 +166,7 @@ section.act{display:flex}
       Karte f&uuml;r Blick nach oben: N oben, <b>O links</b> &nbsp;&middot;&nbsp;
       <i><span style="color:var(--vis)">&#9679;</span> sichtbar</i> &nbsp;
       <i><span style="color:var(--sh)">&#9675;</span> Erdschatten</i> &nbsp;
-      <i><span style="color:var(--day)">&#9679;</span> Tageshimmel</i> &nbsp;&middot;&nbsp; Tippen w&auml;hlt Objekt
+      <i><span style="color:var(--day)">&#9679;</span> Tageshimmel</i> &nbsp;&middot;&nbsp; Linien = Bahn der n&auml;chsten 6 min &middot; Tippen w&auml;hlt Objekt
     </div>
   </section>
 
@@ -493,7 +494,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = SH;
 if (typeof document === 'undefined') return;
 
 /* ---------- Konfiguration ---------- */
-const APP_VERSION   = '0.21';
+const APP_VERSION   = '0.3';
 const OBS_DEFAULT   = { name: 'Wettenberg', lat: 50.61, lon: 8.65, altKm: 0.20 };
 const OBS_KEY       = 'satHimmel.obs.v1';
 const MIN_PASS_EL   = 10;      /* Grad */
@@ -524,7 +525,7 @@ function applyObserver(o){
   obsGd = { latitude: o.lat*Math.PI/180, longitude: o.lon*Math.PI/180, height: o.altKm };
   try{ localStorage.setItem(OBS_KEY, JSON.stringify(o)); }catch(e){}
   showLoc();
-  trail = []; fwdPath = []; lastFwd = 0; passes = null;
+  trail = []; fwdPath = []; lastFwd = 0; passes = null; arcs = []; lastArcs = 0;
   computeAll(new Date());
   renderPasses(); renderList(); updateIssChip(Date.now()); updateInfoCard();
   computePassesAsync();
@@ -554,6 +555,7 @@ const dayLabel = ms => {
 let sats = [], selected = 25544, passes = null;
 let snap = [];               /* letzte Beobachtungen aller Sats */
 let trail = [], fwdPath = [], lastFwd = 0;
+let arcs = [], lastArcs = 0;   /* Vorausbahnen aller Objekte ueber dem Horizont */
 let lastFull = 0, lastList = 0;
 let srcLabel = '–', tleNoteHtml = '';
 let filterVis = false, curView = 'sky';
@@ -635,6 +637,23 @@ function computeAll(now){
   return sunA;
 }
 
+/* Bahnbogen je Objekt: Position jetzt bis +6 min, 30-s-Schritte (nur Punkte ueber Horizont).
+   Neuberechnung alle 8 s -> bei ~180 Objekten rund 2200 SGP4-Aufrufe, unter 40 ms. */
+function computeArcs(nowMs){
+  arcs = [];
+  for (const { s, o } of snap){
+    if (o.el <= -2) continue;
+    const pts = [];
+    for (let dt = 0; dt <= 360000; dt += 30000){
+      const ob = SH.observe(s, new Date(nowMs + dt), obsGd, -90);
+      if (!ob) break;
+      pts.push({ az: ob.az, el: ob.el });
+    }
+    if (pts.length > 1) arcs.push({ catnr: s.catnr, cls: o.cls, pts });
+  }
+  lastArcs = nowMs;
+}
+
 /* ---------- Kuppel zeichnen ---------- */
 const dome = $('dome');
 const ctx = dome.getContext ? dome.getContext('2d') : null;
@@ -700,13 +719,35 @@ function drawDome(now, sunA){
     const [x1,y1] = proj(a.az, a.el, R, cx, cy), [x2,y2] = proj(b.az, b.el, R, cx, cy);
     ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
   }
+  /* Vorausbahnen aller Objekte (heller Kopf, ausblendender Schweif nach vorn) */
+  const ARC_COL = { sichtbar: '141,240,190', taghell: '224,182,110', schatten: '124,144,175', unter: '124,144,175' };
+  for (const a of arcs){
+    const col = ARC_COL[a.cls] || ARC_COL.schatten;
+    const sel = a.catnr === selected, iss = a.catnr === 25544;
+    for (let i = 1; i < a.pts.length; i++){
+      const p = a.pts[i-1], q = a.pts[i];
+      if (p.el <= 0 && q.el <= 0) continue;
+      /* Wrap am Azimutsprung vermeiden (nahe Zenit) */
+      if (Math.abs(q.az - p.az) > 180) continue;
+      const f = 1 - (i - 1) / (a.pts.length - 1);          /* 1 = jetzt, 0 = +6 min */
+      let al = 0.10 + 0.55 * f;
+      if (iss) al = 0.35 + 0.55 * f;
+      else if (sel) al = 0.25 + 0.55 * f;
+      ctx.strokeStyle = 'rgba(' + (iss ? '255,200,87' : col) + ',' + al.toFixed(2) + ')';
+      ctx.lineWidth = (iss || sel ? 1.9 : 1.3) * DPR;
+      ctx.lineCap = 'round';
+      const [x1,y1] = proj(p.az, Math.max(p.el,0), R, cx, cy);
+      const [x2,y2] = proj(q.az, Math.max(q.el,0), R, cx, cy);
+      ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+    }
+  }
   /* Satelliten */
   for (const {s,o} of snap){
     if (o.el <= 0) continue;
     const [x,y] = proj(o.az, o.el, R, cx, cy);
     const isIss = s.catnr === 25544, isSel = s.catnr === selected;
     const m = s.mag === null ? 5 : s.mag;
-    let rad = Math.max(1.6, Math.min(4.2, 4.2 - 0.45*m)) * DPR;
+    let rad = Math.max(2.1, Math.min(4.6, 4.6 - 0.42*m)) * DPR;
     if (isIss) rad = (5 + Math.sin(tNow/300)*0.8) * DPR;
     if (o.cls === 'sichtbar' || isIss){
       ctx.beginPath(); ctx.arc(x,y,rad,0,7);
@@ -714,9 +755,13 @@ function drawDome(now, sunA){
       ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = 6*DPR;
       ctx.fill(); ctx.shadowBlur = 0;
     } else if (o.cls === 'taghell'){
-      ctx.beginPath(); ctx.arc(x,y,rad,0,7); ctx.fillStyle = 'rgba(200,162,94,.55)'; ctx.fill();
+      ctx.beginPath(); ctx.arc(x,y,rad,0,7);
+      ctx.fillStyle = '#e0b66e'; ctx.shadowColor = '#e0b66e'; ctx.shadowBlur = 5*DPR;
+      ctx.fill(); ctx.shadowBlur = 0;
     } else { /* Erdschatten */
-      ctx.beginPath(); ctx.arc(x,y,rad,0,7); ctx.strokeStyle = '#5a6a85'; ctx.lineWidth = 1.2*DPR; ctx.stroke();
+      ctx.beginPath(); ctx.arc(x,y,rad,0,7);
+      ctx.fillStyle = 'rgba(124,144,175,.35)'; ctx.fill();
+      ctx.strokeStyle = '#8ea2c0'; ctx.lineWidth = 1.3*DPR; ctx.stroke();
     }
     if (isSel){
       ctx.beginPath(); ctx.arc(x,y,rad+3.5*DPR,0,7); ctx.strokeStyle = '#e8eef9'; ctx.lineWidth = 1*DPR; ctx.stroke();
@@ -836,7 +881,10 @@ function loop(){
         lastFwd = ms;
       }
     }
-    if (curView === 'sky'){ drawDome(now, sunA); updateInfoCard(); }
+    if (curView === 'sky'){
+      if (ms - lastArcs > 8000) computeArcs(ms);
+      drawDome(now, sunA); updateInfoCard();
+    }
     updateIssChip(ms);
     if (curView === 'list' && ms - lastList >= 1000){ renderList(); lastList = ms; }
     lastFull = ms;
