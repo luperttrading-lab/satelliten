@@ -7,7 +7,7 @@
 <meta name="theme-color" content="#05080f">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>Satellitenhimmel v0.83</title>
+<title>Satellitenhimmel v0.84</title>
 <style>
 :root{
   --bg0:#05080f; --bg1:#0b1220; --bg2:#101a2e; --line:#1d2a42;
@@ -75,7 +75,9 @@ main{flex:1;min-height:0;position:relative;background:var(--bg0)}
 section{position:absolute;inset:0;display:none;flex-direction:column;overflow:hidden}
 section.act{display:flex}
 /* ---------- Himmel ---------- */
-#skyWrap{flex:none;display:flex;justify-content:center;padding:8px 0 2px}
+#skyWrap{flex:none;display:flex;justify-content:center;padding:8px 0 2px;position:relative}
+#domeRotBtn{position:absolute;top:10px;right:16px;z-index:2}
+#domeRotBtn.act{background:var(--bg2);color:var(--ink);border-color:#2c3f63}
 #dome{display:block}
 #issChip{flex:none;margin:4px 14px 0;padding:8px 12px;height:40px;display:flex;align-items:center;gap:8px;
   background:var(--bg1);border:1px solid var(--line);border-radius:12px;font-size:13.5px;overflow:hidden}
@@ -182,7 +184,7 @@ section.act{display:flex}
 
 <main>
   <section id="view-sky" class="act">
-    <div id="skyWrap"><canvas id="dome"></canvas></div>
+    <div id="skyWrap"><canvas id="dome"></canvas><button class="chip" id="domeRotBtn" type="button">N oben</button></div>
     <div id="issChip"><span class="tag">ISS</span><span class="txt" id="issTxt">–</span></div>
     <div id="infoCard">
       <div class="n"><span class="name" id="icName">–</span><span class="rate num" id="icRate"></span><span class="st" id="icState"></span></div>
@@ -692,7 +694,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = SH;
 if (typeof document === 'undefined') return;
 
 /* ---------- Konfiguration ---------- */
-const APP_VERSION   = '0.83';
+const APP_VERSION   = '0.84';
 const OBS_DEFAULT   = { name: 'Wettenberg', lat: 50.61, lon: 8.65, altKm: 0.20 };
 const OBS_KEY       = 'satHimmel.obs.v1';
 const MIN_PASS_EL   = 10;      /* Grad */
@@ -873,9 +875,10 @@ function sizeDome(){
   dome.style.width = domeCss + 'px'; dome.style.height = domeCss + 'px';
   dome.width = Math.round(domeCss * DPR); dome.height = Math.round(domeCss * DPR);
 }
+let domeRot = 0;   /* aktuelle Kartendrehung in Grad (0 = N oben) */
 function proj(az, el, R, cx, cy){
-  const r = (90 - Math.max(el, 0)) / 90 * R, a = az * SH.D2R;
-  return [cx - r*Math.sin(a), cy - r*Math.cos(a)];   /* N oben, O links (Blick nach oben) */
+  const r = (90 - Math.max(el, 0)) / 90 * R, a = (az - domeRot) * SH.D2R;
+  return [cx - r*Math.sin(a), cy - r*Math.cos(a)];   /* Blick-nach-oben-Karte, O links von N */
 }
 function shortName(n){
   return String(n).replace(/\s*\(.*?\)\s*/g, '').replace(/ R\/B$/, ' R/B').slice(0, 14);
@@ -888,6 +891,7 @@ function markPath(c, x, y, r, slow){
 function drawDome(now, sunA){
   if (!ctx) return;
   const W = dome.width, H = dome.height, cx = W/2, cy = H/2, R = W/2 - 16*DPR;
+  domeRot = (domeCompass && peil.heading !== null) ? peil.heading : 0;
   ctx.clearRect(0,0,W,H);
   /* Himmelston nach Daemmerungsphase */
   const g = ctx.createRadialGradient(cx,cy,0,cx,cy,R);
@@ -901,13 +905,18 @@ function drawDome(now, sunA){
     ctx.beginPath(); ctx.arc(cx,cy,(90-e)/90*R,0,7);
     ctx.strokeStyle = '#182742'; ctx.stroke();
   }
-  ctx.beginPath(); ctx.moveTo(cx-R,cy); ctx.lineTo(cx+R,cy); ctx.moveTo(cx,cy-R); ctx.lineTo(cx,cy+R);
+  const rr0 = -domeRot*SH.D2R;
+  ctx.beginPath();
+  ctx.moveTo(cx - R*Math.sin(rr0), cy - R*Math.cos(rr0)); ctx.lineTo(cx + R*Math.sin(rr0), cy + R*Math.cos(rr0));
+  ctx.moveTo(cx - R*Math.cos(rr0), cy + R*Math.sin(rr0)); ctx.lineTo(cx + R*Math.cos(rr0), cy - R*Math.sin(rr0));
   ctx.strokeStyle = '#14213a'; ctx.stroke();
   /* Himmelsrichtungen */
   ctx.fillStyle = '#8ea2c0'; ctx.font = 700 + ' ' + 12*DPR + 'px -apple-system,sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText('N', cx, cy - R + 9*DPR); ctx.fillText('S', cx, cy + R - 9*DPR);
-  ctx.fillText('O', cx - R + 9*DPR, cy); ctx.fillText('W', cx + R - 9*DPR, cy);
+  for (const [dir, lb] of [[0,'N'],[90,'O'],[180,'S'],[270,'W']]){
+    const a = (dir - domeRot)*SH.D2R, rl = R - 9*DPR;
+    ctx.fillText(lb, cx - rl*Math.sin(a), cy - rl*Math.cos(a));
+  }
   /* Sonne */
   if (sunA > -1){
     const sun = SH.sunAltAz(now, obsGd);
@@ -1028,7 +1037,7 @@ function drawDome(now, sunA){
   if ((!issSnap || issSnap.o.el <= 0) && passes && passes.length){
     const nx = passes.find(p => p.catnr === 25544 && p.rise > tNow);
     if (nx){
-      const a = nx.azRise * SH.D2R;
+      const a = (nx.azRise - domeRot) * SH.D2R;
       ctx.strokeStyle = '#ffc857'; ctx.lineWidth = 2.5*DPR;
       ctx.beginPath();
       ctx.moveTo(cx - (R-6*DPR)*Math.sin(a), cy - (R-6*DPR)*Math.cos(a));
@@ -1373,7 +1382,8 @@ $('btnGps').addEventListener('click', () => {
    2. Sonnen-/Mond-Kalibrierung: Kreuz auf das Gestirn halten, Tipp -> Offset exakt. */
 const MAG_DECL = 3.5;   /* Grad Ost, Mitteleuropa 2026, Restfehler frisst die Kalibrierung */
 const peil = { granted: false, evt: null, offset: null, offsetSrc: 'auto',
-               az: null, el: null, lastDraw: 0 };
+               az: null, el: null, heading: null, lastDraw: 0 };
+let domeCompass = false;
 
 function sensSupported(){ return typeof DeviceOrientationEvent !== 'undefined' || typeof window.ondeviceorientation !== 'undefined'; }
 function attachSens(){
@@ -1381,20 +1391,31 @@ function attachSens(){
   peil.granted = true;
   $('peilPerm').style.display = 'none';
 }
-$('btnSens').addEventListener('click', () => {
+function requestSens(onFail){
   const inFrame2 = (function(){ try{ return window.self !== window.top; }catch(e){ return true; } })();
+  const blockMsg = inFrame2
+    ? 'Blockiert - in der eingebetteten Vorschau sind Sensoren gesperrt. In Safari (GitHub Pages) klappt es.'
+    : 'Abgelehnt. Seite neu laden und erneut versuchen.';
   if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function'){
     DeviceOrientationEvent.requestPermission().then(st => {
-      if (st === 'granted') attachSens();
-      else $('peilPermHint').textContent = inFrame2
-        ? 'Blockiert - in der eingebetteten Vorschau sind Sensoren gesperrt. In Safari (GitHub Pages) klappt es.'
-        : 'Abgelehnt. Seite neu laden und erneut versuchen.';
-    }).catch(() => {
-      $('peilPermHint').textContent = inFrame2
-        ? 'Blockiert - in der eingebetteten Vorschau sind Sensoren gesperrt. In Safari (GitHub Pages) klappt es.'
-        : 'Sensorzugriff nicht m\u00f6glich.';
-    });
+      if (st === 'granted') attachSens(); else onFail(blockMsg);
+    }).catch(() => onFail(blockMsg));
   } else attachSens();   /* Android/Desktop: keine Abfrage noetig */
+}
+$('btnSens').addEventListener('click', () => requestSens(m => { $('peilPermHint').textContent = m; }));
+/* Kuppel-Kompassmodus: Karte dreht sich mit der Blickrichtung */
+$('domeRotBtn').addEventListener('click', () => {
+  if (!domeCompass){
+    if (!peil.granted) requestSens(m => toast(m));
+    domeCompass = true;
+    $('domeRotBtn').textContent = 'Kompass';
+    $('domeRotBtn').classList.add('act');
+    if (peil.heading === null) toast('Kompassmodus \u2013 warte auf Sensordaten \u2026');
+  } else {
+    domeCompass = false;
+    $('domeRotBtn').textContent = 'N oben';
+    $('domeRotBtn').classList.remove('act');
+  }
 });
 function onOrient(e){
   if (e.alpha === null && e.webkitCompassHeading === undefined) return;
@@ -1415,6 +1436,10 @@ function onOrient(e){
     peil.az = ((peil.az + (((az - peil.az + 540) % 360) - 180) * 0.25) % 360 + 360) % 360;
     peil.el = peil.el + (p.el - peil.el) * 0.25;
   }
+  /* Blickrichtung der Geraete-Oberkante (fuer den Kompassmodus der Kuppel) */
+  const hd = ((p.yawY + (peil.offset === null ? 0 : peil.offset)) % 360 + 360) % 360;
+  peil.heading = peil.heading === null ? hd
+    : ((peil.heading + (((hd - peil.heading + 540) % 360) - 180) * 0.25) % 360 + 360) % 360;
 }
 /* Kalibrierziele: alles, dessen Position die App exakt kennt und das man sehen kann */
 function kalTargets(){
