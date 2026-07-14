@@ -7,7 +7,7 @@
 <meta name="theme-color" content="#05080f">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>Satellitenhimmel v1.47</title>
+<title>Satellitenhimmel v1.54</title>
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -720,7 +720,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = SH;
 if (typeof document === 'undefined') return;
 
 /* ---------- Konfiguration ---------- */
-const APP_VERSION   = '1.47';
+const APP_VERSION   = '1.54';
 const OBS_DEFAULT   = { name: 'Wettenberg', lat: 50.61, lon: 8.65, altKm: 0.20 };
 const OBS_KEY       = 'satHimmel.obs.v1';
 const MIN_PASS_EL   = 10;      /* Grad */
@@ -1181,7 +1181,7 @@ function loop(){
   rafId = requestAnimationFrame(loop);
   const now = new Date(), ms = now.getTime();
   if (curView === 'peil') drawPeil(now);
-  if (curView === 'map' && ms - lastMap >= 1000){ drawWorld(now); lastMap = ms; }
+  if (curView === 'map' && ms - lastMap >= ((mapZoom > 1 || glbZoom > 1) ? 500 : 1000)){ drawWorld(now); lastMap = ms; }
   if (ms - lastFull >= 500 && sats.length){
     const sunA = computeAll(now);
     /* Spur + Vorausbahn des gewaehlten Objekts */
@@ -1736,6 +1736,9 @@ const wm = $('worldMap');
 const wctx = wm.getContext ? wm.getContext('2d') : null;
 let wmTrack = { t: 0, pts: [], lonU0: null };     /* Spur in ENTROLLTER Laenge (kein Datumsgrenzen-Sprung) */
 let mapPan = null, mapDrag = null, mapLastTap = 0; /* Pan der Endloskarte, entrollte Laenge am linken Rand */
+let mapZoom = 1, mapLatC = 0;                      /* Pinch-Zoom (1..8) und Breiten-Zentrum */
+let mapFollow = true;                              /* Folge-Modus: Welt zieht unter der ISS durch */
+const mapPtr = new Map(); let mapPinch = null;     /* aktive Zeiger fuer Pinch */
 const TRACK_H = 6;                                 /* Stunden Spur voraus */
 const TRACK_PAST = 6;                              /* Stunden Spur zurueck (verpasste Ueberfluege) */
 function sizeMap(){
@@ -1826,13 +1829,36 @@ function drawWorld(now){
     wmTrack = { t: ms, pts, lonU0: lonUNow, marks, cross };
   }
   const lonU0 = wmTrack.lonU0 === null ? 0 : wmTrack.lonU0;
-  if (mapPan === null) mapPan = lonU0 - 180;   /* Startansicht: ISS auf der Mittellinie ("jetzt") */
-  const px = lu => (lu - mapPan)/360*W;
-  const py = lat => (90-lat)/180*H;
+  const SPAN = 360/mapZoom, LATSPAN = 180/mapZoom;
+  /* Position/Breite auf der Spur zu beliebiger Zeit (auch fuer Live-Marker) */
+  const lonUofT = t => {
+    const P = wmTrack.pts;
+    if (!P || P.length < 2) return lonU0;
+    const rate2 = (P[P.length-1][0] - P[0][0]) / (P[P.length-1][2] - P[0][2]);
+    if (t <= P[0][2]) return P[0][0] + (t - P[0][2]) * rate2;
+    if (t >= P[P.length-1][2]) return P[P.length-1][0] + (t - P[P.length-1][2]) * rate2;
+    for (let i=0;i<P.length-1;i++){
+      if (P[i][2] <= t && t <= P[i+1][2]){
+        const f = (t - P[i][2]) / (P[i+1][2] - P[i][2] || 1);
+        return P[i][0] + f*(P[i+1][0] - P[i][0]);
+      }
+    }
+    return P[0][0];
+  };
+  const oLive = iss ? SH.observe(iss, now, obsGd, -90) : null;
+  if (mapFollow && wmTrack.pts.length > 1){
+    mapPan = lonUofT(ms) - SPAN/2;                 /* Mittellinie klebt auf der ISS */
+    if (oLive) mapLatC = oLive.subLat;
+  }
+  mapLatC = Math.max(-(90-90/mapZoom), Math.min(90-90/mapZoom, mapLatC));
+  if (mapPan === null) mapPan = lonU0 - SPAN/2;
+  const px = lu => (lu - mapPan)/SPAN*W;
+  const latTop = mapLatC + LATSPAN/2;
+  const py = lat => (latTop - lat)/LATSPAN*H;
   /* Zeit an der Mittellinie: Moment, in dem die ISS die Bildmitte erreicht.
      Nachtseite wird fuer DIESEN Zeitpunkt gerechnet - beim Scrollen wandert
      die Nacht also korrekt nach Westen. */
-  const centerLonU = mapPan + 180;
+  const centerLonU = mapPan + SPAN/2;
   let tC = ms, latC = null;
   if (wmTrack.pts.length > 1){
     const P = wmTrack.pts;
@@ -1893,16 +1919,18 @@ function drawWorld(now){
   wctx.clearRect(0,0,W,H);
   /* Kacheln: Kachel K deckt die Laengen [K-180, K+180] ab */
   const k0 = Math.floor((mapPan+180)/360)*360;
-  const tiles = [k0-360, k0, k0+360, k0+720].filter(K => K+180 > mapPan && K-180 < mapPan+360);
+  const tiles = [k0-360, k0, k0+360, k0+720].filter(K => K+180 > mapPan && K-180 < mapPan+SPAN);
   /* NASA-Texturen: Tag/Nacht-Blend je Kachel; sonst Vektor-Fallback */
   const bTex = ensureBlend(tC, sunLat, sunLon);
   if (bTex){
-    for (const K of tiles) wctx.drawImage(bTex, px(-180+K), 0, W + 2, H);
+    wctx.imageSmoothingQuality = 'high';
+    for (const K of tiles) wctx.drawImage(bTex, px(-180+K), py(90), mapZoom*W + 2, mapZoom*H + 2);
     wctx.strokeStyle = 'rgba(120,150,200,.13)'; wctx.lineWidth = 1;
-    for (let lu = Math.ceil(mapPan/30)*30; lu <= mapPan+360; lu += 30){
+    const gstep = mapZoom >= 4 ? 10 : 30;
+    for (let lu = Math.ceil(mapPan/gstep)*gstep; lu <= mapPan+SPAN; lu += gstep){
       wctx.beginPath(); wctx.moveTo(px(lu),0); wctx.lineTo(px(lu),H); wctx.stroke();
     }
-    for (let lat2=-60; lat2<=60; lat2+=30){
+    for (let lat2=-80; lat2<=80; lat2+=gstep){
       wctx.beginPath(); wctx.moveTo(0,py(lat2)); wctx.lineTo(W,py(lat2)); wctx.stroke();
     }
   }
@@ -1910,7 +1938,7 @@ function drawWorld(now){
   wctx.fillStyle = COL_OCEAN; wctx.fillRect(0,0,W,H);
   /* Gradnetz (entrollt) */
   wctx.strokeStyle = COL_GRAT; wctx.lineWidth = 1;
-  for (let lu = Math.ceil(mapPan/30)*30; lu <= mapPan+360; lu += 30){
+  for (let lu = Math.ceil(mapPan/30)*30; lu <= mapPan+SPAN; lu += 30){
     wctx.beginPath(); wctx.moveTo(px(lu),0); wctx.lineTo(px(lu),H); wctx.stroke();
   }
   for (let lat=-60; lat<=60; lat+=30){ wctx.beginPath(); wctx.moveTo(0,py(lat)); wctx.lineTo(W,py(lat)); wctx.stroke(); }
@@ -2036,7 +2064,7 @@ function drawWorld(now){
     }
   }
   /* aktuelle Position (Live-Marker); Sichtbarkeitszone haengt an der Mittellinie */
-  const o = iss ? SH.observe(iss, now, obsGd, -90) : null;
+  const o = oLive;
   if (o && latC !== null){
     const rho = Math.acos(6371/(6371+o.hKm));
     wctx.strokeStyle = 'rgba(255,200,87,.5)'; wctx.setLineDash([4,4]);
@@ -2055,7 +2083,7 @@ function drawWorld(now){
     wctx.strokeStyle = '#e8eef9'; wctx.lineWidth = 1.2*DPR; wctx.stroke();
   }
   if (o){
-    const issLonU = lonU0;
+    const issLonU = lonUofT(ms);
     const ix = px(issLonU), iy = py(o.subLat);
     wctx.beginPath(); wctx.arc(ix, iy, (4 + Math.sin(ms/300))*DPR/1.4, 0, 7);
     wctx.fillStyle = '#ffc857'; wctx.shadowColor = '#ffc857'; wctx.shadowBlur = 8;
@@ -2096,6 +2124,7 @@ const CITIES = (function(){ try{ return JSON.parse($('world-cities').textContent
 const glbCv = $('globe');
 const gctx = glbCv.getContext ? glbCv.getContext('2d') : null;
 const glb = { lat: 22, lon: 8.65, drag: null, lastTap: 0 };
+let glbZoom = 1; const glbPtr = new Map(); let glbPinch = null;
 /* NASA-Texturen (Blue/Black Marble, aequirektangular 2:1). Fallback: Vektor-Optik. */
 const TEXDAY = new Image(), TEXNIGHT = new Image();
 let texReady = 0, texFail = false;
@@ -2105,7 +2134,7 @@ try{
   TEXDAY.src = 'data:image/jpeg;base64,' + $('tex-day').textContent.trim();
   TEXNIGHT.src = 'data:image/png;base64,' + $('tex-night').textContent.trim();
 }catch(e){ texFail = true; }
-const BW = 1024, BH = 512;
+const BW = 2048, BH = 1024;
 let blendCv = null, blendCtx = null, blendImg = null, blendT = -1e15, blendStamp = 0, dayPix = null, nightPix = null;
 function ensureBlend(tMs, sunLat, sunLon){
   if (texFail || texReady < 2) return null;
@@ -2125,12 +2154,13 @@ function ensureBlend(tMs, sunLat, sunLon){
   }
   const sinSl = Math.sin(sunLat*SH.D2R), cosSl = Math.cos(sunLat*SH.D2R);
   const out = blendImg.data;
+  const cosU = new Float64Array(BW);
+  for (let u = 0; u < BW; u++) cosU[u] = Math.cos(((-180 + (u+0.5)/BW*360) - sunLon)*SH.D2R);
   for (let v = 0; v < BH; v++){
     const lat = (90 - (v+0.5)/BH*180)*SH.D2R;
     const sLa = Math.sin(lat)*sinSl, cLa = Math.cos(lat)*cosSl;
     for (let u = 0; u < BW; u++){
-      const lon = -180 + (u+0.5)/BW*360;
-      const sinalt = sLa + cLa*Math.cos((lon - sunLon)*SH.D2R);
+      const sinalt = sLa + cLa*cosU[u];
       let w2 = (sinalt + 0.09)/0.18; w2 = w2 < 0 ? 0 : (w2 > 1 ? 1 : w2);
       const i = (v*BW + u)*4, wn = 1 - w2;
       out[i]   = dayPix[i]*w2   + (nightPix[i]*1.15 + 7)*wn;
@@ -2144,9 +2174,10 @@ function ensureBlend(tMs, sunLat, sunLon){
   return blendCv;
 }
 let glbTexCv = null, glbTexKey = '';
-function ensureGlobeTex(W, R, cx, cy){
+function ensureGlobeTex(W, R0, cx, cy){
   if (!blendCv || !blendImg) return null;
-  const key = Math.round(glb.lon/1.5) + '|' + blendStamp + '|' + W;
+  const R = R0 * glbZoom;
+  const key = Math.round(glb.lon/(mapFollow ? 0.5 : 1.5)) + '|' + blendStamp + '|' + W + '|' + Math.round(glbZoom*8);
   if (glbTexCv && glbTexKey === key) return glbTexCv;
   if (!glbTexCv || glbTexCv.width !== W){
     glbTexCv = document.createElement('canvas'); glbTexCv.width = W; glbTexCv.height = W;
@@ -2184,7 +2215,7 @@ function sizeGlobe(){
 }
 function drawGlobe(tCd, sunLat, sunLon){
   if (!gctx || !glbCv.width) return;
-  const W = glbCv.width, cx = W/2, cy = W/2, R = W/2 - 6*DPR;
+  const W = glbCv.width, cx = W/2, cy = W/2, R0 = W/2 - 6*DPR, R = R0 * glbZoom;
   gctx.clearRect(0,0,W,W);
   const s0 = Math.sin(glb.lat*SH.D2R), c0 = Math.cos(glb.lat*SH.D2R);
   const P = (lat, lon) => {
@@ -2196,12 +2227,12 @@ function drawGlobe(tCd, sunLat, sunLon){
   };
   /* Sonnenrichtung in Ansichtskoordinaten */
   const [, , sz, sx, sy] = P(sunLat, sunLon);
-  const texG = ensureGlobeTex(W, R, cx, cy);
+  const texG = ensureGlobeTex(W, R0, cx, cy);
   if (texG){
     gctx.drawImage(texG, 0, 0);
-    gctx.beginPath(); gctx.arc(cx, cy, R, 0, 7);
+    gctx.beginPath(); gctx.arc(cx, cy, Math.min(R, R0), 0, 7);
     gctx.strokeStyle = 'rgba(120,170,230,.4)'; gctx.lineWidth = 2*DPR; gctx.stroke();
-    gctx.save(); gctx.beginPath(); gctx.arc(cx, cy, R, 0, 7); gctx.clip();
+    gctx.save(); gctx.beginPath(); gctx.arc(cx, cy, R0, 0, 7); gctx.clip();
   }
   if (!texG){
   /* Ozean mit Lichtgradient Richtung Sonne + Atmosphaerenrand */
@@ -2210,7 +2241,7 @@ function drawGlobe(tCd, sunLat, sunLon){
   const grd = gctx.createRadialGradient(hx, hy, R*0.1, cx, cy, R*1.05);
   grd.addColorStop(0, sz > 0 ? '#2c5a94' : '#17335c');
   grd.addColorStop(1, '#081426');
-  gctx.beginPath(); gctx.arc(cx, cy, R, 0, 7); gctx.fillStyle = grd; gctx.fill();
+  gctx.beginPath(); gctx.arc(cx, cy, Math.min(R, R0*1.0), 0, 7); gctx.fillStyle = grd; gctx.fill();
   gctx.strokeStyle = 'rgba(120,170,230,.35)'; gctx.lineWidth = 2*DPR; gctx.stroke();
   /* Ab hier alles auf die Scheibe geclippt */
   gctx.save();
@@ -2344,50 +2375,108 @@ function drawGlobe(tCd, sunLat, sunLon){
   gctx.restore();
 }
 glbCv.addEventListener('pointerdown', e => {
-  glb.drag = { x: e.clientX, y: e.clientY, lat0: glb.lat, lon0: glb.lon, moved: false };
+  glbPtr.set(e.pointerId === undefined ? 1 : e.pointerId, { x: e.clientX, y: e.clientY });
+  if (glbPtr.size === 2){
+    const [a, b] = [...glbPtr.values()];
+    glbPinch = { d0: Math.hypot(a.x-b.x, a.y-b.y) || 1, z0: glbZoom };
+    glb.drag = null;   /* Pinch zoomt um die verfolgte ISS - Follow bleibt an */
+  } else {
+    glb.drag = { x: e.clientX, y: e.clientY, lat0: glb.lat, lon0: glb.lon, moved: false };
+  }
 });
 document.addEventListener('pointermove', e => {
+  const id = e.pointerId === undefined ? 1 : e.pointerId;
+  if (glbPinch && glbPtr.has(id)){
+    glbPtr.set(id, { x: e.clientX, y: e.clientY });
+    const [a, b] = [...glbPtr.values()];
+    glbZoom = Math.max(1, Math.min(4, glbPinch.z0 * (Math.hypot(a.x-b.x, a.y-b.y)||1)/glbPinch.d0));
+    lastMap = 0;
+    return;
+  }
   if (!glb.drag) return;
   const dx4 = e.clientX - glb.drag.x;
   if (Math.abs(dx4) > 6) glb.drag.moved = true;
   if (!glb.drag.moved) return;
   /* Nur Drehung um die feste Polachse - die Neigung bleibt, wie bei einem Standglobus */
-  glb.lon = glb.drag.lon0 - dx4*0.45;
+  glb.lon = glb.drag.lon0 - dx4*0.45/glbZoom;
   lastMap = 0;
 });
-document.addEventListener('pointerup', () => {
+document.addEventListener('pointerup', e => {
+  const id = e.pointerId === undefined ? 1 : e.pointerId;
+  glbPtr.delete(id);
+  if (glbPtr.size < 2) glbPinch = null;
   if (!glb.drag) return;
   const tap = !glb.drag.moved; glb.drag = null;
   if (tap){
     const t2 = Date.now();
-    if (t2 - glb.lastTap < 320){ glb.lat = 22; glb.lon = OBSERVER.lon; lastMap = 0; }
+    if (t2 - glb.lastTap < 320){ glb.lat = 22; glb.lon = OBSERVER.lon; glbZoom = 1; mapFollow = true; lastMap = 0; }
     glb.lastTap = t2;
   }
 });
 /* Pan: Welt nach links wegschieben, rechts kommt die Fortsetzung mit der kuenftigen Bahn.
    Doppeltipp = zurueck zur ISS. */
 wm.addEventListener('pointerdown', e => {
-  mapDrag = { x: e.clientX, pan0: mapPan, moved: false };
+  mapPtr.set(e.pointerId === undefined ? 1 : e.pointerId, { x: e.clientX, y: e.clientY });
+  if (mapPtr.size === 2){
+    const [a, b] = [...mapPtr.values()];
+    mapPinch = { d0: Math.hypot(a.x-b.x, a.y-b.y) || 1, z0: mapZoom,
+                 mx: (a.x+b.x)/2, my: (a.y+b.y)/2 };
+    mapDrag = null;   /* Pinch zoomt um die verfolgte ISS - Follow bleibt an */
+  } else {
+    mapDrag = { x: e.clientX, y: e.clientY, pan0: mapPan, lat0: mapLatC, moved: false };
+  }
 });
 document.addEventListener('pointermove', e => {
-  if (!mapDrag || mapPan === null) return;
-  const dx3 = e.clientX - mapDrag.x;
-  if (Math.abs(dx3) > 6) mapDrag.moved = true;
+  if (mapPan === null) return;
+  const id = e.pointerId === undefined ? 1 : e.pointerId;
+  if (mapPinch && mapPtr.has(id)){
+    mapPtr.set(id, { x: e.clientX, y: e.clientY });
+    const [a, b] = [...mapPtr.values()];
+    const d = Math.hypot(a.x-b.x, a.y-b.y) || 1;
+    const r = wm.getBoundingClientRect();
+    const rw = Math.max(r.width, 40), rh = Math.max(r.height, 20);
+    /* Geo-Punkt unter der Pinch-Mitte festhalten */
+    const fx = (mapPinch.mx - r.left)/rw, fy = (mapPinch.my - r.top)/rh;
+    const gLon = mapPan + fx*(360/mapZoom);
+    const gLat = (mapLatC + 90/mapZoom) - fy*(180/mapZoom);
+    mapZoom = Math.max(1, Math.min(8, mapPinch.z0 * d/mapPinch.d0));
+    mapPan = gLon - fx*(360/mapZoom);
+    mapLatC = gLat + fy*(180/mapZoom) - 90/mapZoom;
+    lastMap = 0;
+    return;
+  }
+  if (!mapDrag) return;
+  const dx3 = e.clientX - mapDrag.x, dy3 = e.clientY - mapDrag.y;
+  if (Math.abs(dx3) + Math.abs(dy3) > 6){ mapDrag.moved = true; mapFollow = false; }
   if (!mapDrag.moved) return;
   const r = wm.getBoundingClientRect();
-  const degPerPx = 360 / Math.max(r.width, 40);
+  const degPerPx = (360/mapZoom) / Math.max(r.width, 40);
   const lo = wmTrack.pts.length ? wmTrack.pts[0][0] : (wmTrack.lonU0 === null ? 0 : wmTrack.lonU0);
   const hi = wmTrack.pts.length ? wmTrack.pts[wmTrack.pts.length-1][0] : lo + 360;
-  mapPan = Math.max(lo - 180, Math.min(hi - 20, mapDrag.pan0 - dx3*degPerPx));   /* links: bis -6 h Vergangenheit */
+  mapPan = Math.max(lo - 180/mapZoom, Math.min(hi - 20/mapZoom, mapDrag.pan0 - dx3*degPerPx));
+  mapLatC = mapDrag.lat0 + dy3*(180/mapZoom)/Math.max(r.height, 20);
   lastMap = 0;
 });
-document.addEventListener('pointerup', () => {
+document.addEventListener('pointercancel', e => {
+  const id = e.pointerId === undefined ? 1 : e.pointerId;
+  mapPtr.delete(id); glbPtr.delete(id);
+  if (mapPtr.size < 2) mapPinch = null;
+  if (glbPtr.size < 2) glbPinch = null;
+  mapDrag = null; glb.drag = null;
+});
+document.addEventListener('pointerup', e => {
+  const id = e.pointerId === undefined ? 1 : e.pointerId;
+  mapPtr.delete(id);
+  if (mapPtr.size < 2) mapPinch = null;
   if (!mapDrag) return;
   const wasTap = !mapDrag.moved;
   mapDrag = null;
   if (wasTap){
     const t2 = Date.now();
-    if (t2 - mapLastTap < 320){ mapPan = null; glb.lon = OBSERVER.lon; lastMap = 0; toast('Zur\u00fcck zur ISS'); }
+    if (t2 - mapLastTap < 320){
+      mapFollow = true;   /* Zoom bleibt - gezoomt folgen ist der Beobachtungsmodus */
+      lastMap = 0; toast('Folge-Modus: Mittellinie auf der ISS');
+    }
     mapLastTap = t2;
   }
 });
